@@ -1,13 +1,13 @@
 CbC - Cflat Compiler (the ubuntu 64bit version)
 ====================
 
-[《自制编译器》](http://www.ituring.com.cn/book/1308)一书中实现的cbc编译器的ubuntu64位版本。这个项目主要解决64位机器上无法正常编译和运行[cbc](https://github.com/aamine/cbc)的问题。
+The ubuntu 64-bit version of the cbc compiler implemented in the [book "Homemade Compilers."](http://www.ituring.com.cn/book/1308). This project mainly solves the problem of unable to compile and run [cbc](https://github.com/aamine/cbc) on 64-bit machines.
 
-## 直接安装使用（在ubuntu 64位系统上）
+## Direct installation use (on ubuntu 64-bits systems)
 
-### 安装依赖
+### Installation dependencies
 
-> 注意：不同ubuntu发行版可能依赖库名称不一致。此处代码为ubuntu 16.04版本上的安装命令
+> Note: Different ubuntu distributions may rely on inconsistent library names. The code here is the installation command on ubuntu 16.04
 
 ```shell
 apt-get update && apt-get install -y \
@@ -16,16 +16,16 @@ apt-get update && apt-get install -y \
         git
 ```
 
-### 下载&安装cbc
+###  Download & Install cbc
 
 ```shell
 git clone https://github.com/leungwensen/cbc-ubuntu-64bit.git
 cd cbc-ubuntu-64bit && ./install.sh
 ```
 
-### 使用
+###  Usage
 
-和原始的cbc不同，在64位系统里需要增加`-Wa,"--32" -Wl,"-melf_i386"`执行参数。
+Unlike the original cbc, the -Wa,"--32" -Wl,"-melf_i386" execution parameters need to be added to the 64-bit system.
 
 ```shell
 cbc -Wa,"--32" -Wl,"-melf_i386" test/hello.cb
@@ -33,46 +33,139 @@ cbc -Wa,"--32" -Wl,"-melf_i386" test/hello.cb
 > Hello, World!
 ```
 
-## 使用docker镜像（在任意64位宿主环境上）
+##  Use docker image (on any 64-bit host environment)
 
-大致的原理就是基于ubuntu 16.04的64位系统构建了一个可供cbc编译、执行的环境。用户只需把打包好的镜像下载到本地就可以得到可执行的cbc，免去配置和编译cbc的麻烦。
+The general principle is to build an environment for cbc compilation and execution based on the 64-bit system of Ubuntu 16.04. Users only need to download the packaged image locally to get the executable cbc, eliminating the need to configure and compile cbc.
 
-### 安装docker：详见[Docker 中文指南](http://docker.widuu.com/index.html)
+### Install docker
 
-### 启动docker daemon进程
+### Start the docker daemon process
 
 ```shell
 eval $(docker-machine env default)
 ```
 
-### 下载镜像[leungwensen/cbc-ubuntu-64bit](https://hub.docker.com/r/leungwensen/cbc-ubuntu-64bit)
+### Download the mirror [leungwensen/cbc-ubuntu-64bit](https://hub.docker.com/r/leungwensen/cbc-ubuntu-64bit)
 
 ```shell
 docker pull leungwensen/cbc-ubuntu-64bit
 ```
 
-### 执行镜像
+### Perform mirroring 
 
 ```shell
 docker run -t -i leungwensen/cbc-ubuntu-64bit
 ```
 
-### 执行cbc
+### Execute cbc 
 
-> 镜像里的cbc命令为`cbc -Wa,--32 -Wl,-melf_i386`的别名，可以直接执行。
+> The cbc command in the image is an alias of cbc -Wa,--32 -Wl,-melf_i386 and can be executed directly.
 
 ```shell
 cbc cbc-ubuntu-64bit/test/hello.cb
 ```
 
-## 共建／bug报告
+Original descrition
+====================
 
-有任何使用上的问题，可以[搜索已有issue或者新建一个issue](https://github.com/leungwensen/cbc-ubuntu-64bit/issues)。
 
-更希望大家可以一起完善这个项目，给我提[pull request](https://github.com/leungwensen/cbc-ubuntu-64bit/pulls)
+    This is the CbC, Cflat programming language compiler.
 
-## 参考
+Requirements
+------------
 
-* [aamine/cbc](https://github.com/aamine/cbc)
-* [ふつうのコンパイラをつくろう Ubuntu64bit](http://blog.livedoor.jp/yamanobori_old/archives/5189798.html)
+    To compile cbc itself:
 
+        * JDK 1.5 or later
+        * JavaCC 4.0 or later
+        * ant
+        * make
+
+    To run cbc and compiled program:
+
+        * Linux 2.4 or later
+        * util-linux (ld-linux.so.2)
+        * GNU libc 2.3 or later
+        * GNU binutils (as, ld)
+
+
+Installation
+------------
+
+    To install all files under /usr/local/cbc:
+
+        # sudo ./install.sh
+        # sudo ln -s ../cbc/bin/cbc /usr/local/bin/cbc
+
+    To install all files under $HOME/cbc:
+
+        $ ./install.sh $HOME/cbc
+        $ ln -s ../cbc/bin/cbc $HOME/bin/cbc
+
+
+Build
+-----
+
+    Edit build.properties for your environment and invoke make:
+
+        $ vi build.properties
+        $ make
+
+
+Test
+----
+
+    Invoke "make test":
+
+        $ make test
+
+    Note that you need bash (not bourne sh) to run test scripts.
+    ksh or zsh may work.
+
+
+Usage
+-----
+
+    $ cbc --help
+
+
+License
+-------
+
+    Modified BSD license.
+    For details of modified BSD license, see following:
+
+    Copyright (c) 2007-2009  Minero Aoki.  All rights reserved.
+
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions
+    are met:
+
+        * Redistributions of source code must retain the above copyright
+          notice, this list of conditions and the following disclaimer.
+        * Redistributions in binary form must reproduce the above
+          copyright notice, this list of conditions and the following
+          disclaimer in the documentation and/or other materials provided
+          with the distribution.
+        * Neither the name of the Minero Aoki nor the names of its
+          contributors may be used to endorse or promote products
+          derived from this software without specific prior written
+          permission.
+
+    THIS SOFTWARE IS PROVIDED BY MINERO AOKI ``AS IS'' AND ANY EXPRESS
+    OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+    WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+    DISCLAIMED. IN NO EVENT SHALL <copyright holder> BE LIABLE FOR ANY
+    DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+    DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE
+    GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+    INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
+    IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+    OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+    EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
+Contact
+-------
+
+    CbC produced by Minero Aoki <aamine@loveruby.net>.
