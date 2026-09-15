@@ -1,0 +1,13 @@
+import stdio;
+int
+main(int argc, char **argv)
+{
+    _Bool a = 5;
+    _Bool b = 256;
+    _Bool c = 0;
+    _Bool d = -3;
+    int   x = 7;
+    _Bool e = x;
+    printf("%d;%d;%d;%d;%d\n", a, b, c, d, e);
+    return 0;
+}
