@@ -7,6 +7,7 @@ import net.loveruby.cflat.type.TypeTable;
 import net.loveruby.cflat.ir.IR;
 import net.loveruby.cflat.sysdep.CodeGenerator;
 import net.loveruby.cflat.sysdep.AssemblyCode;
+import net.loveruby.cflat.sysdep.BinaryAssemblyCode;
 import net.loveruby.cflat.utils.ErrorHandler;
 import net.loveruby.cflat.exception.*;
 import java.util.*;
@@ -117,7 +118,10 @@ public class Compiler {
         AssemblyCode asm = generateAssembly(ir, opts);
         if (dumpAsm(asm, opts.mode())) return;
         if (printAsm(asm, opts.mode())) return;
-        writeFile(destPath, asm.toSource());
+        if (errorHandler.errorOccured()) {
+            throw new SemanticException("compile failed.");
+        }
+        writeAssembly(destPath, asm);
     }
 
     public AST parseFile(String path, Options opts)
@@ -176,6 +180,46 @@ public class Compiler {
                 opts.ldArgs(), opts.soFileName(), opts.ldOptions());
     }
     // #@@}
+
+    private void writeAssembly(String path, AssemblyCode asm) throws FileException {
+        if (asm instanceof BinaryAssemblyCode) {
+            writeBinaryFile(path, ((BinaryAssemblyCode)asm).toBytes());
+        }
+        else {
+            writeFile(path, asm.toSource());
+        }
+    }
+
+    private void writeBinaryFile(String path, byte[] data) throws FileException {
+        if (path.equals("-")) {
+            try {
+                System.out.write(data);
+                System.out.flush();
+            }
+            catch (IOException ex) {
+                errorHandler.error("IO error" + ex.getMessage());
+                throw new FileException("file error");
+            }
+            return;
+        }
+        try {
+            FileOutputStream f = new FileOutputStream(path);
+            try {
+                f.write(data);
+            }
+            finally {
+                f.close();
+            }
+        }
+        catch (FileNotFoundException ex) {
+            errorHandler.error("file not found: " + path);
+            throw new FileException("file error");
+        }
+        catch (IOException ex) {
+            errorHandler.error("IO error" + ex.getMessage());
+            throw new FileException("file error");
+        }
+    }
 
     private void writeFile(String path, String str) throws FileException {
         if (path.equals("-")) {

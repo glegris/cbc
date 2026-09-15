@@ -35,11 +35,11 @@ class Options {
     }
 
     boolean isAssembleRequired() {
-        return mode.requires(CompilerMode.Assemble);
+        return mode.requires(CompilerMode.Assemble) && platform.needsExternalToolchain();
     }
 
     boolean isLinkRequired() {
-        return mode.requires(CompilerMode.Link);
+        return mode.requires(CompilerMode.Link) && platform.needsExternalToolchain();
     }
 
     List<SourceFile> sourceFiles() {
@@ -47,10 +47,14 @@ class Options {
     }
 
     String asmFileNameOf(SourceFile src) {
-        if (outputFileName != null && mode == CompilerMode.Compile) {
+        // Targets with no external assemble/link step (the JVM target)
+        // produce their final artifact right here, so -o always applies,
+        // not just in "-S" mode.
+        if (outputFileName != null
+                && (mode == CompilerMode.Compile || !platform.needsExternalToolchain())) {
             return outputFileName;
         }
-        return src.asmFileName();
+        return src.compiledFileName(platform.compiledFileExtension());
     }
 
     String objFileNameOf(SourceFile src) {
@@ -160,6 +164,9 @@ class Options {
                 }
                 else if (arg.startsWith("-o")) {
                     outputFileName = getOptArg(arg, args);
+                }
+                else if (arg.startsWith("-arch=") || arg.startsWith("--target=")) {
+                    platform = platformFor(arg.substring(arg.indexOf('=') + 1));
                 }
                 else if (arg.equals("-fpic")
                         || arg.equals("-fPIC")) {
@@ -275,6 +282,17 @@ class Options {
         }
     }
 
+    private Platform platformFor(String name) {
+        if (name.equals("x86") || name.equals("x86-linux") || name.equals("i386")) {
+            return new X86Linux();
+        }
+        if (name.equals("jvm") || name.equals("java")) {
+            return new net.loveruby.cflat.sysdep.jvm.JVMPlatform();
+        }
+        parseError("unknown target architecture: " + name);
+        return null;   // never reach
+    }
+
     private void parseError(String msg) {
         throw new OptionParseError(msg);
     }
@@ -340,6 +358,8 @@ class Options {
         out.println("  -S               Generates an assembly file and quit.");
         out.println("  -c               Generates an object file and quit.");
         out.println("  -o PATH          Places output in file PATH.");
+        out.println("  -arch=ARCH       Selects the target: x86 (default) or jvm.");
+        out.println("  --target=ARCH    Equivalent to -arch=ARCH.");
         out.println("  -v               Turn on verbose mode.");
         out.println("  --version        Shows compiler version and quit.");
         out.println("  --help           Prints this message and quit.");

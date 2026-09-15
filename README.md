@@ -65,6 +65,45 @@ docker run -t -i leungwensen/cbc-ubuntu-64bit
 cbc cbc-ubuntu-64bit/test/hello.cb
 ```
 
+## JVM backend (`-arch=jvm`)
+
+In addition to native x86 assembly, cbc can compile a cflat source file
+directly to a JVM class file, using the [ASM](https://asm.ow2.io/) bytecode
+library. There is no separate assemble/link step for this target: the
+`.class` file it produces is already runnable.
+
+```shell
+cbc -arch=jvm test/add.cb
+java add
+```
+
+(`--target=jvm` is accepted as a longer alias for `-arch=jvm`.) The
+produced class is named after the source file, sanitized into a valid
+Java identifier (e.g. `while-break.cb` becomes class `while_break`), so
+that the file name and the class name it contains always match.
+
+This backend only supports the parts of cflat that have a reasonable
+equivalent on the JVM:
+
+  * `char`/`short`/`int`/`long`, signed and unsigned, mapped to JVM `int`
+    or `long`; arithmetic, bitwise ops, shifts, comparisons and casts.
+  * control flow: `if`, `while`, `for`, `do...while`, `switch`, `goto`,
+    `break`/`continue`.
+  * functions (including recursion) and global/static scalar variables.
+  * `main(void)` and `main(int argc, char **argv)`; `argc` is derived
+    from the JVM's own `String[] args`, `argv` is not usable.
+
+Because the JVM has no C-style address space, **pointers, arrays, structs
+and unions are not supported**: a pointer value is only ever carried
+around as an opaque, unusable handle (so an unused `char **argv`
+parameter is harmless), while dereferencing one (`*p`, `p[i]`, `p->m`,
+`&x`) is reported as a normal compile error rather than silently
+miscompiled. Calling a function that isn't defined in the same source
+file is rejected too, except for three libc intrinsics translated to
+real JVM calls so simple, printf-based programs still work:
+`putchar(int)`, `puts(char*)` and `printf(char*, ...)` (the format/string
+arguments must be string literals for the latter two).
+
 Original descrition
 ====================
 

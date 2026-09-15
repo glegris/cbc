@@ -13,11 +13,16 @@
         <mkdir dir="${build.dir}" />
         <mkdir dir="${build.classes.dir}" />
         <javac destdir="${build.classes.dir}" srcdir="${src.dir}"
-               debug="true" optimize="true">
+               debug="true" optimize="true"
+               classpath="${asm.jar}">
             <compilerarg value="-Xlint:unchecked" />
             <include name="net/**/*.java" />
         </javac>
-        <jar jarfile="${build.jar}" basedir="${build.classes.dir}" />
+        <jar jarfile="${build.jar}" basedir="${build.classes.dir}">
+            <manifest>
+                <attribute name="Class-Path" value="${asm.jar.basename}" />
+            </manifest>
+        </jar>
     </target>
 
     <target name="recompile" depends="clean, compile" />

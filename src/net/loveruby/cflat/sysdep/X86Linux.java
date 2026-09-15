@@ -25,4 +25,12 @@ public class X86Linux implements Platform {
     public Linker linker(ErrorHandler h) {
         return new GNULinker(h);
     }
+
+    public String compiledFileExtension() {
+        return ".s";
+    }
+
+    public boolean needsExternalToolchain() {
+        return true;
+    }
 }

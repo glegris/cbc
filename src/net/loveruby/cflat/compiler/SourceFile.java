@@ -1,4 +1,5 @@
 package net.loveruby.cflat.compiler;
+import net.loveruby.cflat.utils.NameUtils;
 import java.io.File;
 
 class SourceFile implements LdArg {
@@ -80,6 +81,17 @@ class SourceFile implements LdArg {
 
     String asmFileName() {
         return replaceExt(EXT_ASSEMBLY_SOURCE);
+    }
+
+    String compiledFileName(String ext) {
+        // A JVM class file's default name must be a valid Java identifier
+        // (plus ".class"), or "java <name>" won't be able to load it back
+        // -- the internal class name is derived from the same base name
+        // via NameUtils.toJavaIdentifier (see sysdep.jvm.CodeGenerator).
+        if (ext.equals(".class")) {
+            return NameUtils.toJavaIdentifier(baseName(originalName, true)) + ext;
+        }
+        return replaceExt(ext);
     }
 
     String objFileName() {
