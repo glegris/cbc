@@ -8,6 +8,7 @@ import net.loveruby.cflat.utils.NameUtils;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.MethodVisitor;
 import java.io.File;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -19,46 +20,80 @@ import static org.objectweb.asm.Opcodes.*;
  * Compiles cflat IR directly to a single JVM class file using ASM,
  * instead of x86 assembly.
  *
- * This backend only supports the "computational core" of the language:
- * integer arithmetic (char/short/int/long, signed and unsigned), control
- * flow (if/while/for/do/switch/goto), recursion and global scalar
- * variables.  There is no memory model on the JVM comparable to a C
- * address space, so pointers, arrays, structs and unions are NOT
- * supported: a pointer/function-pointer value is carried around as an
- * opaque, unusable handle (so e.g. an unused "char **argv" parameter is
- * harmless), but dereferencing one (*p, p[i], p->m, &x) is a compile
- * error reported through the normal ErrorHandler.
+ * The JVM has no C-style flat address space, so this backend builds one:
+ * a single "$mem" byte array (wrapped in a little-endian ByteBuffer,
+ * "$buf") simulates the whole process memory.  Every global/static
+ * variable and every string literal gets a fixed offset into it, computed
+ * at compile time; every function gets its own "stack frame" (a region
+ * bump-allocated from "$sp" on entry and released on every return),
+ * exactly mirroring how the x86 backend lays out its own stack frame,
+ * just against a simulated address space instead of a real one. A
+ * variable's address is simply frameBase+offset (locals/params) or a
+ * compile-time constant (globals/string literals); "&x", "*p", "p[i]",
+ * "p->m" and pointer arithmetic all fall out of the IR's existing
+ * Addr/Mem/Bin lowering once these primitives exist, with no further
+ * special-casing needed. A tiny bump-allocated heap arena ("$hp") backs
+ * argv construction (see emitMainBridge); there is no free().
  *
- * Calls to functions that are not defined in the same source file are
- * rejected, except for a handful of libc intrinsics that are translated
- * to real JVM calls so simple, printf-based demo programs still work:
- * putchar(int), puts(char*) and printf(char*, ...) -- the last two only
- * when the format/string argument is a string literal.
+ * Remaining limitations: passing/returning a struct or union BY VALUE
+ * (as opposed to through a pointer) is not supported, nor is assigning
+ * one struct/union to another as a whole (copy members individually, or
+ * use pointers). Function pointers are not supported at all, neither
+ * taking one's address nor (obviously) calling through one. Calling a
+ * function that isn't defined in the same source file is rejected too,
+ * except for three libc intrinsics translated to real JVM calls so
+ * printf-based programs work: putchar(int), puts(char*) and
+ * printf(char*, ...) -- the format string itself must still be a
+ * compile-time string literal, but puts/%s now accept any char*
+ * expression (read from memory at run time, not just literals).
+ * Finally, this backend maps cflat's "long" and every pointer type to a
+ * real 8-byte JVM long (see JVMPlatform's lp64 TypeTable), so sizeof(long)
+ * and sizeof(T*) are 8 here versus 4 on the (32-bit-only) x86 backend.
  */
 public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
+    private static final int HEAP_SIZE = 8 * 1024 * 1024;  // 8MB simulated address space
+    private static final int STATIC_BASE = 8;  // address 0 (NULL) is never a valid variable address
+
+    private static final String MEM_FIELD = "$mem";
+    private static final String BUF_FIELD = "$buf";
+    private static final String SP_FIELD = "$sp";
+    private static final String HP_FIELD = "$hp";
+    private static final String STR_METHOD = "$str";
+    private static final String NEWSTR_METHOD = "$newstr";
+    private static final String ALLOC_METHOD = "$alloc";
+    private static final String BUF_DESC = "Ljava/nio/ByteBuffer;";
+    private static final String BUF_CLASS = "java/nio/ByteBuffer";
+
     private final ErrorHandler errorHandler;
 
     private String className;
     private ClassWriter cw;
-    private final Map<Entity, GlobalInfo> globals = new HashMap<Entity, GlobalInfo>();
+
+    // Static memory layout, computed once up front.
+    private final Map<Entity, Long> globalAddr = new HashMap<Entity, Long>();
+    private final Map<ConstantEntry, Long> stringAddr = new HashMap<ConstantEntry, Long>();
+    private final List<DefinedVariable> globalVarsInOrder = new ArrayList<DefinedVariable>();
+    private final List<ConstantEntry> stringLiteralsInOrder = new ArrayList<ConstantEntry>();
+    private long staticEnd;
 
     public CodeGenerator(ErrorHandler errorHandler) {
         this.errorHandler = errorHandler;
     }
 
     public net.loveruby.cflat.sysdep.AssemblyCode generate(IR ir) {
-        className = sanitizeClassName(baseName(ir.fileName()));
+        className = NameUtils.toJavaIdentifier(baseName(ir.fileName()));
+        computeStaticLayout(ir);
+
         cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES);
         cw.visit(V1_8, ACC_PUBLIC | ACC_SUPER, className, null, "java/lang/Object", null);
+        cw.visitField(ACC_PRIVATE | ACC_STATIC, MEM_FIELD, "[B", null, null).visitEnd();
+        cw.visitField(ACC_PRIVATE | ACC_STATIC, BUF_FIELD, BUF_DESC, null, null).visitEnd();
+        cw.visitField(ACC_PRIVATE | ACC_STATIC, SP_FIELD, "J", null, null).visitEnd();
+        cw.visitField(ACC_PRIVATE | ACC_STATIC, HP_FIELD, "J", null, null).visitEnd();
 
-        for (DefinedVariable var : ir.scope().definedGlobalScopeVariables()) {
-            Width w = widthOf(var.type(), var.location());
-            String fieldName = sanitizeFieldName(var.symbolString());
-            globals.put(var, new GlobalInfo(fieldName, w));
-            int access = ACC_STATIC | (var.isPrivate() ? ACC_PRIVATE : ACC_PUBLIC);
-            cw.visitField(access, fieldName, w.descriptor, null, null).visitEnd();
-        }
-
+        emitAllocHelper();
+        emitStrHelper();
+        emitNewstrHelper();
         emitClinit(ir);
 
         DefinedFunction mainFunction = null;
@@ -83,8 +118,46 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
     }
 
     //
-    // Top-level structure: class name, fields, <clinit>, main() bridge
+    // Static memory layout: globals + string literals get a fixed,
+    // compile-time-known address, packed back to back (alignment is not
+    // needed for correctness here: $buf is a heap ByteBuffer, which reads
+    // and writes multi-byte values at any offset without requiring it).
     //
+
+    /** Bytes to reserve for one variable's slot: exactly its true size.
+     *  (An earlier version of this padded every scalar up to 8 bytes,
+     *  to protect against writes wider than the variable's own type --
+     *  see visit(Assign)'s doc comment for why that could otherwise
+     *  happen. That padding is no longer needed now that a named-target
+     *  assignment always truncates to the *entity's* own declared width
+     *  rather than trusting the compiled RHS value's width, and it broke
+     *  address arithmetic between adjacent variables, e.g. "(&y - &x)"
+     *  no longer matching sizeof(x).) */
+    private long slotSize(Entity e) {
+        return e.allocSize();
+    }
+
+    private void computeStaticLayout(IR ir) {
+        long offset = STATIC_BASE;
+        for (DefinedVariable var : ir.scope().definedGlobalScopeVariables()) {
+            globalAddr.put(var, offset);
+            globalVarsInOrder.add(var);
+            offset += slotSize(var);
+        }
+        for (ConstantEntry ent : ir.constantTable()) {
+            stringAddr.put(ent, offset);
+            stringLiteralsInOrder.add(ent);
+            offset += encodeCString(ent.value()).length;
+        }
+        staticEnd = offset;
+    }
+
+    private byte[] encodeCString(String value) {
+        byte[] raw = value.getBytes(StandardCharsets.UTF_8);
+        byte[] result = new byte[raw.length + 1];  // NUL-terminated, like a real C string
+        System.arraycopy(raw, 0, result, 0, raw.length);
+        return result;
+    }
 
     private String baseName(String path) {
         String name = new File(path).getName();
@@ -92,39 +165,182 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         return (dot > 0) ? name.substring(0, dot) : name;
     }
 
-    private String sanitizeClassName(String name) {
-        // Must agree with SourceFile's default ".class" output name, or
-        // the produced file and the class name inside it would not match
-        // and "java <name>" would fail to load it.
-        return NameUtils.toJavaIdentifier(name);
-    }
-
-    private String sanitizeFieldName(String name) {
-        return name.replace('.', '$');
-    }
+    //
+    // <clinit>: set up $mem/$buf, populate string literals, run global
+    // variable initializers, then initialize the stack/heap pointers.
+    //
 
     private void emitClinit(IR ir) {
-        List<DefinedVariable> inits = new ArrayList<DefinedVariable>();
-        for (DefinedVariable var : ir.scope().definedGlobalScopeVariables()) {
+        MethodVisitor mv = cw.visitMethod(ACC_STATIC, "<clinit>", "()V", null, null);
+        mv.visitCode();
+
+        mv.visitLdcInsn(HEAP_SIZE);
+        mv.visitIntInsn(NEWARRAY, T_BYTE);
+        mv.visitFieldInsn(PUTSTATIC, className, MEM_FIELD, "[B");
+
+        mv.visitFieldInsn(GETSTATIC, className, MEM_FIELD, "[B");
+        mv.visitMethodInsn(INVOKESTATIC, BUF_CLASS, "wrap", "([B)" + BUF_DESC, false);
+        mv.visitFieldInsn(GETSTATIC, "java/nio/ByteOrder", "LITTLE_ENDIAN", "Ljava/nio/ByteOrder;");
+        mv.visitMethodInsn(INVOKEVIRTUAL, BUF_CLASS, "order",
+                "(Ljava/nio/ByteOrder;)" + BUF_DESC, false);
+        mv.visitFieldInsn(PUTSTATIC, className, BUF_FIELD, BUF_DESC);
+
+        for (ConstantEntry ent : stringLiteralsInOrder) {
+            emitStaticBytesInit(mv, stringAddr.get(ent), encodeCString(ent.value()));
+        }
+
+        FunctionCompiler fc = new FunctionCompiler(mv);
+        for (DefinedVariable var : globalVarsInOrder) {
             if (var.hasInitializer() && var.ir() != null) {
-                inits.add(var);
+                fc.storeGlobalInit(globalAddr.get(var), var.location(), var.ir(),
+                        asmWidthOf(var.type()));
             }
         }
-        if (inits.isEmpty()) return;
 
-        MethodVisitor mv = cw.visitMethod(ACC_STATIC, "<clinit>", "()V", null, null);
-        FunctionCompiler fc = new FunctionCompiler(mv);
-        mv.visitCode();
-        for (DefinedVariable var : inits) {
-            fc.currentLocation = var.location();
-            fc.compile(var.ir());
-            GlobalInfo g = globals.get(var);
-            mv.visitFieldInsn(PUTSTATIC, className, g.name, g.width.descriptor);
-        }
+        mv.visitLdcInsn((long) HEAP_SIZE);
+        mv.visitFieldInsn(PUTSTATIC, className, SP_FIELD, "J");
+        mv.visitLdcInsn(staticEnd);
+        mv.visitFieldInsn(PUTSTATIC, className, HP_FIELD, "J");
+
         mv.visitInsn(RETURN);
         mv.visitMaxs(0, 0);
         mv.visitEnd();
     }
+
+    /** Copies a fixed byte[] into $mem at a fixed offset, by round-tripping
+     *  it through a Latin-1 string constant (so it lands in the constant
+     *  pool) and System.arraycopy -- much more compact than one
+     *  instruction per byte. */
+    private void emitStaticBytesInit(MethodVisitor mv, long addr, byte[] bytes) {
+        if (bytes.length == 0) return;
+        String latin1 = new String(bytes, StandardCharsets.ISO_8859_1);
+        mv.visitLdcInsn(latin1);
+        mv.visitFieldInsn(GETSTATIC, "java/nio/charset/StandardCharsets", "ISO_8859_1",
+                "Ljava/nio/charset/Charset;");
+        mv.visitMethodInsn(INVOKEVIRTUAL, "java/lang/String", "getBytes",
+                "(Ljava/nio/charset/Charset;)[B", false);
+        mv.visitInsn(ICONST_0);
+        mv.visitFieldInsn(GETSTATIC, className, MEM_FIELD, "[B");
+        mv.visitLdcInsn((int) addr);
+        mv.visitLdcInsn(bytes.length);
+        mv.visitMethodInsn(INVOKESTATIC, "java/lang/System", "arraycopy",
+                "(Ljava/lang/Object;ILjava/lang/Object;II)V", false);
+    }
+
+    //
+    // Runtime support methods, handwritten in bytecode (there is no
+    // cflat source for them): $alloc bumps the heap pointer, $str reads a
+    // NUL-terminated C string out of memory into a Java String, $newstr
+    // does the reverse (used to build argv; see emitMainBridge).
+    //
+
+    private void emitAllocHelper() {
+        MethodVisitor mv = cw.visitMethod(ACC_PRIVATE | ACC_STATIC, ALLOC_METHOD, "(J)J", null, null);
+        mv.visitCode();
+        // long addr = $hp; $hp += size; return addr;
+        mv.visitFieldInsn(GETSTATIC, className, HP_FIELD, "J");
+        mv.visitVarInsn(LSTORE, 2);
+        mv.visitFieldInsn(GETSTATIC, className, HP_FIELD, "J");
+        mv.visitVarInsn(LLOAD, 0);
+        mv.visitInsn(LADD);
+        mv.visitFieldInsn(PUTSTATIC, className, HP_FIELD, "J");
+        mv.visitVarInsn(LLOAD, 2);
+        mv.visitInsn(LRETURN);
+        mv.visitMaxs(0, 0);
+        mv.visitEnd();
+    }
+
+    private void emitStrHelper() {
+        MethodVisitor mv = cw.visitMethod(ACC_PRIVATE | ACC_STATIC, STR_METHOD,
+                "(J)Ljava/lang/String;", null, null);
+        mv.visitCode();
+        // slots: addr0=0,1 (long param); addr=2; end=3; bytes=4
+        org.objectweb.asm.Label loopStart = new org.objectweb.asm.Label();
+        org.objectweb.asm.Label loopEnd = new org.objectweb.asm.Label();
+        mv.visitVarInsn(LLOAD, 0);
+        mv.visitInsn(L2I);
+        mv.visitVarInsn(ISTORE, 2);
+        mv.visitVarInsn(ILOAD, 2);
+        mv.visitVarInsn(ISTORE, 3);
+        mv.visitLabel(loopStart);
+        mv.visitFieldInsn(GETSTATIC, className, MEM_FIELD, "[B");
+        mv.visitVarInsn(ILOAD, 3);
+        mv.visitInsn(BALOAD);
+        mv.visitJumpInsn(IFEQ, loopEnd);
+        mv.visitIincInsn(3, 1);
+        mv.visitJumpInsn(GOTO, loopStart);
+        mv.visitLabel(loopEnd);
+        mv.visitVarInsn(ILOAD, 3);
+        mv.visitVarInsn(ILOAD, 2);
+        mv.visitInsn(ISUB);
+        mv.visitIntInsn(NEWARRAY, T_BYTE);
+        mv.visitVarInsn(ASTORE, 4);
+        mv.visitFieldInsn(GETSTATIC, className, MEM_FIELD, "[B");
+        mv.visitVarInsn(ILOAD, 2);
+        mv.visitVarInsn(ALOAD, 4);
+        mv.visitInsn(ICONST_0);
+        mv.visitVarInsn(ILOAD, 3);
+        mv.visitVarInsn(ILOAD, 2);
+        mv.visitInsn(ISUB);
+        mv.visitMethodInsn(INVOKESTATIC, "java/lang/System", "arraycopy",
+                "(Ljava/lang/Object;ILjava/lang/Object;II)V", false);
+        mv.visitTypeInsn(NEW, "java/lang/String");
+        mv.visitInsn(DUP);
+        mv.visitVarInsn(ALOAD, 4);
+        mv.visitFieldInsn(GETSTATIC, "java/nio/charset/StandardCharsets", "UTF_8",
+                "Ljava/nio/charset/Charset;");
+        mv.visitMethodInsn(INVOKESPECIAL, "java/lang/String", "<init>",
+                "([BLjava/nio/charset/Charset;)V", false);
+        mv.visitInsn(ARETURN);
+        mv.visitMaxs(0, 0);
+        mv.visitEnd();
+    }
+
+    private void emitNewstrHelper() {
+        MethodVisitor mv = cw.visitMethod(ACC_PRIVATE | ACC_STATIC, NEWSTR_METHOD,
+                "(Ljava/lang/String;)J", null, null);
+        mv.visitCode();
+        // slots: s=0 (ref param); bytes=1 (ref); addr=2,3 (long)
+        mv.visitVarInsn(ALOAD, 0);
+        mv.visitFieldInsn(GETSTATIC, "java/nio/charset/StandardCharsets", "UTF_8",
+                "Ljava/nio/charset/Charset;");
+        mv.visitMethodInsn(INVOKEVIRTUAL, "java/lang/String", "getBytes",
+                "(Ljava/nio/charset/Charset;)[B", false);
+        mv.visitVarInsn(ASTORE, 1);
+        mv.visitVarInsn(ALOAD, 1);
+        mv.visitInsn(ARRAYLENGTH);
+        mv.visitInsn(I2L);
+        mv.visitLdcInsn(1L);
+        mv.visitInsn(LADD);
+        mv.visitMethodInsn(INVOKESTATIC, className, ALLOC_METHOD, "(J)J", false);
+        mv.visitVarInsn(LSTORE, 2);
+        mv.visitVarInsn(ALOAD, 1);
+        mv.visitInsn(ICONST_0);
+        mv.visitFieldInsn(GETSTATIC, className, MEM_FIELD, "[B");
+        mv.visitVarInsn(LLOAD, 2);
+        mv.visitInsn(L2I);
+        mv.visitVarInsn(ALOAD, 1);
+        mv.visitInsn(ARRAYLENGTH);
+        mv.visitMethodInsn(INVOKESTATIC, "java/lang/System", "arraycopy",
+                "(Ljava/lang/Object;ILjava/lang/Object;II)V", false);
+        mv.visitFieldInsn(GETSTATIC, className, MEM_FIELD, "[B");
+        mv.visitVarInsn(LLOAD, 2);
+        mv.visitVarInsn(ALOAD, 1);
+        mv.visitInsn(ARRAYLENGTH);
+        mv.visitInsn(I2L);
+        mv.visitInsn(LADD);
+        mv.visitInsn(L2I);
+        mv.visitInsn(ICONST_0);
+        mv.visitInsn(BASTORE);
+        mv.visitVarInsn(LLOAD, 2);
+        mv.visitInsn(LRETURN);
+        mv.visitMaxs(0, 0);
+        mv.visitEnd();
+    }
+
+    //
+    // Functions
+    //
 
     private void compileFunction(DefinedFunction f) {
         if (f.type().getFunctionType().isVararg()) {
@@ -142,8 +358,9 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         mv.visitEnd();
     }
 
-    /** Emits a bridge "public static void main(String[])" that calls the
-     *  user's cflat main() and translates its return value to System.exit. */
+    /** Emits a bridge "public static void main(String[])" that builds a
+     *  real argv out of the JVM's own String[] args, calls the user's
+     *  cflat main(), and translates its return value to System.exit. */
     private void emitMainBridge(DefinedFunction mainFunction) {
         List<CBCParameter> params = mainFunction.parameters();
         if (params.size() > 2) {
@@ -155,31 +372,77 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         MethodVisitor mv = cw.visitMethod(ACC_PUBLIC | ACC_STATIC, "main",
                 "([Ljava/lang/String;)V", null, null);
         mv.visitCode();
+        // slots: args=0 (String[]); argc=1 (int); argv=2,3 (long); i=4 (int)
         if (params.size() >= 1) {
-            // argc = args.length + 1 (argv[0], the program name, has no
-            // JVM equivalent but still counts towards argc in C)
             mv.visitVarInsn(ALOAD, 0);
             mv.visitInsn(ARRAYLENGTH);
             mv.visitInsn(ICONST_1);
             mv.visitInsn(IADD);
-            if (widthOf(params.get(0).type(), params.get(0).location()) == Width.LONG) {
+            mv.visitVarInsn(ISTORE, 1);
+        }
+        if (params.size() >= 2) {
+            // argv = $alloc(argc * 8): an array of (argc) 8-byte pointers
+            mv.visitVarInsn(ILOAD, 1);
+            mv.visitInsn(I2L);
+            mv.visitLdcInsn(8L);
+            mv.visitInsn(LMUL);
+            mv.visitMethodInsn(INVOKESTATIC, className, ALLOC_METHOD, "(J)J", false);
+            mv.visitVarInsn(LSTORE, 2);
+            // argv[0] = $newstr(<class name>), standing in for argv[0]
+            mv.visitFieldInsn(GETSTATIC, className, BUF_FIELD, BUF_DESC);
+            mv.visitVarInsn(LLOAD, 2);
+            mv.visitInsn(L2I);
+            mv.visitLdcInsn(className);
+            mv.visitMethodInsn(INVOKESTATIC, className, NEWSTR_METHOD,
+                    "(Ljava/lang/String;)J", false);
+            mv.visitMethodInsn(INVOKEVIRTUAL, BUF_CLASS, "putLong", "(IJ)" + BUF_DESC, false);
+            mv.visitInsn(POP);
+            // for (i = 0; i < args.length; i++) argv[i+1] = $newstr(args[i]);
+            org.objectweb.asm.Label loopStart = new org.objectweb.asm.Label();
+            org.objectweb.asm.Label loopEnd = new org.objectweb.asm.Label();
+            mv.visitInsn(ICONST_0);
+            mv.visitVarInsn(ISTORE, 4);
+            mv.visitLabel(loopStart);
+            mv.visitVarInsn(ILOAD, 4);
+            mv.visitVarInsn(ALOAD, 0);
+            mv.visitInsn(ARRAYLENGTH);
+            mv.visitJumpInsn(IF_ICMPGE, loopEnd);
+            mv.visitFieldInsn(GETSTATIC, className, BUF_FIELD, BUF_DESC);
+            mv.visitVarInsn(LLOAD, 2);
+            mv.visitVarInsn(ILOAD, 4);
+            mv.visitInsn(ICONST_1);
+            mv.visitInsn(IADD);
+            mv.visitInsn(I2L);
+            mv.visitLdcInsn(8L);
+            mv.visitInsn(LMUL);
+            mv.visitInsn(LADD);
+            mv.visitInsn(L2I);
+            mv.visitVarInsn(ALOAD, 0);
+            mv.visitVarInsn(ILOAD, 4);
+            mv.visitInsn(AALOAD);
+            mv.visitMethodInsn(INVOKESTATIC, className, NEWSTR_METHOD,
+                    "(Ljava/lang/String;)J", false);
+            mv.visitMethodInsn(INVOKEVIRTUAL, BUF_CLASS, "putLong", "(IJ)" + BUF_DESC, false);
+            mv.visitInsn(POP);
+            mv.visitIincInsn(4, 1);
+            mv.visitJumpInsn(GOTO, loopStart);
+            mv.visitLabel(loopEnd);
+        }
+        if (params.size() >= 1) {
+            mv.visitVarInsn(ILOAD, 1);
+            if (paramOrReturnWidth(params.get(0).type(), params.get(0).location()) == Width.LONG) {
                 mv.visitInsn(I2L);
             }
         }
         if (params.size() >= 2) {
-            // argv: cflat's "char **argv" has no real representation here;
-            // pass an unusable placeholder handle (see the class comment).
-            if (widthOf(params.get(1).type(), params.get(1).location()) == Width.LONG) {
-                mv.visitInsn(LCONST_0);
-            }
-            else {
-                mv.visitInsn(ICONST_0);
+            mv.visitVarInsn(LLOAD, 2);
+            if (paramOrReturnWidth(params.get(1).type(), params.get(1).location()) != Width.LONG) {
+                mv.visitInsn(L2I);
             }
         }
-        mv.visitMethodInsn(INVOKESTATIC, className, "main",
-                methodDescriptor(mainFunction), false);
+        mv.visitMethodInsn(INVOKESTATIC, className, "main", methodDescriptor(mainFunction), false);
         if (!mainFunction.isVoid()) {
-            if (widthOf(mainFunction.returnType(), mainFunction.location()) == Width.LONG) {
+            if (paramOrReturnWidth(mainFunction.returnType(), mainFunction.location()) == Width.LONG) {
                 mv.visitInsn(L2I);
             }
             mv.visitMethodInsn(INVOKESTATIC, "java/lang/System", "exit", "(I)V", false);
@@ -192,10 +455,10 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
     private String methodDescriptor(Function f) {
         StringBuilder sb = new StringBuilder("(");
         for (CBCParameter p : f.parameters()) {
-            sb.append(widthOf(p.type(), p.location()).descriptor);
+            sb.append(paramOrReturnWidth(p.type(), p.location()).descriptor);
         }
         sb.append(")");
-        sb.append(f.isVoid() ? "V" : widthOf(f.returnType(), f.location()).descriptor);
+        sb.append(f.isVoid() ? "V" : paramOrReturnWidth(f.returnType(), f.location()).descriptor);
         return sb.toString();
     }
 
@@ -203,10 +466,13 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
     // Type widths
     //
 
-    /** Storage width of a value on the JVM: everything that is 8 bytes
-     *  wide (cflat "long", and pointers under our lp64 TypeTable) lives in
-     *  a JVM long; everything else (char/short/int, and any pointer we
-     *  can't otherwise represent) lives in a plain JVM int. */
+    /** The JVM-level category (int or long) a value must have at a
+     *  function boundary (parameter/return): the only two shapes an
+     *  actual JVM method call can carry.  An array parameter decays to a
+     *  pointer per C rules; a struct/union can't be marshalled this way
+     *  at all and is rejected. This is distinct from asmWidthOf(), which
+     *  is the *true* C width (down to 1 byte) used for every memory
+     *  access once a value is safely inside $mem. */
     private enum Width {
         INT(1, "I"), LONG(2, "J");
 
@@ -219,30 +485,63 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         }
     }
 
-    private Width widthOf(net.loveruby.cflat.type.Type t, Location loc) {
-        if (t.isStruct() || t.isUnion() || t.isArray()) {
+    private Width paramOrReturnWidth(net.loveruby.cflat.type.Type t, Location loc) {
+        if (t.isStruct() || t.isUnion()) {
             errorHandler.error(loc,
-                    "struct/union/array types are not supported by the JVM backend: " + t);
+                    "passing/returning a struct or union by value is not supported "
+                            + "by the JVM backend (use a pointer): " + t);
             return Width.INT;
         }
-        if (t.isVoid()) {
-            return Width.INT;
+        if (t.isArray()) {
+            return Width.LONG;  // arrays decay to a pointer
         }
         return (t.size() == 8) ? Width.LONG : Width.INT;
+    }
+
+    /** The true C-level memory width of a scalar (never struct/union:
+     *  those are only ever accessed by address, never loaded whole). */
+    private net.loveruby.cflat.asm.Type asmWidthOf(net.loveruby.cflat.type.Type t) {
+        if (t.isArray()) {
+            return net.loveruby.cflat.asm.Type.INT64;  // decays to a pointer
+        }
+        if (!t.isScalar()) {
+            return net.loveruby.cflat.asm.Type.INT64;  // already reported elsewhere; safe fallback
+        }
+        return net.loveruby.cflat.asm.Type.get(t.size());
     }
 
     private static boolean isWide(net.loveruby.cflat.asm.Type t) {
         return t == net.loveruby.cflat.asm.Type.INT64;
     }
 
-    private static class GlobalInfo {
-        final String name;
-        final Width width;
-
-        GlobalInfo(String name, Width width) {
-            this.name = name;
-            this.width = width;
+    private static boolean isComparison(Op op) {
+        switch (op) {
+        case EQ: case NEQ: case S_GT: case S_GTEQ: case S_LT: case S_LTEQ:
+        case U_GT: case U_GTEQ: case U_LT: case U_LTEQ:
+            return true;
+        default:
+            return false;
         }
+    }
+
+    /** The width an expression's *value* actually occupies on the JVM
+     *  stack once compiled. This is almost always just e.type(), except
+     *  for comparisons and "!": TypeChecker types those as the promoted
+     *  operand type (matching x86, where a comparison result just zero-
+     *  extends into a possibly-wider register with no ill effect), which
+     *  can be "long" or a pointer type even though the value emitted here
+     *  is always a plain 0/1 int -- so callers that need to know whether
+     *  to treat a compiled value as a JVM int or long (Return, ExprStmt,
+     *  Assign, printf args, ...) must go through this rather than reading
+     *  the IR node's own type directly. */
+    private net.loveruby.cflat.asm.Type resultWidth(Expr e) {
+        if (e instanceof Bin && isComparison(((Bin) e).op())) {
+            return net.loveruby.cflat.asm.Type.INT32;
+        }
+        if (e instanceof Uni && ((Uni) e).op() == Op.NOT) {
+            return net.loveruby.cflat.asm.Type.INT32;
+        }
+        return e.type();
     }
 
     //
@@ -252,11 +551,17 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
     private class FunctionCompiler implements IRVisitor<Void, Void> {
         private final MethodVisitor mv;
         private final DefinedFunction func;
-        private final Map<Entity, Integer> slots = new HashMap<Entity, Integer>();
+        private final Map<Entity, Long> frameOffset = new HashMap<Entity, Long>();
         private final Map<net.loveruby.cflat.asm.Label, org.objectweb.asm.Label> labels =
                 new HashMap<net.loveruby.cflat.asm.Label, org.objectweb.asm.Label>();
+        private final List<Integer> paramJvmSlots = new ArrayList<Integer>();
+        private final List<Width> paramWidths = new ArrayList<Width>();
+        private final long frameSize;
+        private final int frameBaseSlot;
+        private final int returnValueSlot;
         private final int switchScratchInt;
         private final int switchScratchLong;
+        private final org.objectweb.asm.Label epilogueLabel = new org.objectweb.asm.Label();
         private Location currentLocation;
 
         /** For compiling a function body. */
@@ -264,60 +569,129 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             this.mv = mv;
             this.func = func;
             this.currentLocation = func.location();
-            int next = 0;
+
+            int jvmSlot = 0;
             for (CBCParameter p : func.parameters()) {
-                slots.put(p, next);
-                next += widthOf(p.type(), p.location()).slots;
+                Width w = paramOrReturnWidth(p.type(), p.location());
+                paramJvmSlots.add(jvmSlot);
+                paramWidths.add(w);
+                jvmSlot += w.slots;
             }
-            // NOTE: func.localVariables() actually walks the parameter
-            // scope too (it shares the LocalScope machinery with real
-            // block scopes), so it would re-list the parameters here.
-            // func.lvarScope() is the function body's own scope, which
-            // correctly excludes them (this mirrors how the x86 backend
-            // locates its stack frame).
-            for (DefinedVariable v : func.lvarScope().allLocalVariables()) {
-                slots.put(v, next);
-                next += widthOf(v.type(), v.location()).slots;
+
+            long off = 0;
+            for (CBCParameter p : func.parameters()) {
+                frameOffset.put(p, off);
+                off += slotSize(p);
             }
-            switchScratchInt = next++;
-            switchScratchLong = next;
+            // func.lvarScope() is the function body's own scope; walking
+            // it recursively (rather than flattening it with
+            // allLocalVariables()) lets sibling block scopes -- whose
+            // lifetimes never overlap -- share the same offsets, exactly
+            // like the x86 backend's own locateLocalVariables().
+            frameSize = layoutScope(func.lvarScope(), off);
+
+            frameBaseSlot = jvmSlot;
+            jvmSlot += 2;
+            returnValueSlot = jvmSlot;
+            jvmSlot += 2;
+            switchScratchInt = jvmSlot++;
+            switchScratchLong = jvmSlot;
+        }
+
+        /** Recursively lays out one block scope's own variables starting
+         *  at parentLen, then each child scope again from that same
+         *  point (not chained across siblings), returning the largest
+         *  extent reached by any of them. */
+        private long layoutScope(LocalScope scope, long parentLen) {
+            long len = parentLen;
+            for (DefinedVariable var : scope.localVariables()) {
+                frameOffset.put(var, len);
+                len += slotSize(var);
+            }
+            long maxLen = len;
+            for (LocalScope child : scope.children()) {
+                maxLen = Math.max(maxLen, layoutScope(child, len));
+            }
+            return maxLen;
         }
 
         /** For compiling a single top-level constant initializer expression
-         *  (used from <clinit>): no parameters, no locals, no switches. */
+         *  (used from <clinit>): globals only, no frame of its own. */
         FunctionCompiler(MethodVisitor mv) {
             this.mv = mv;
             this.func = null;
+            this.frameSize = 0;
+            this.frameBaseSlot = -1;
+            this.returnValueSlot = -1;
             this.switchScratchInt = -1;
             this.switchScratchLong = -1;
         }
 
         void run() {
             mv.visitCode();
+            emitPrologue();
             for (Stmt s : func.ir()) {
                 compileStmt(s);
             }
-            appendFallbackReturn();
+            emitEpilogue();
         }
 
-        private void appendFallbackReturn() {
-            // JVM bytecode must not "fall off the end" of a method; a
-            // trailing return here is unreachable whenever the cflat
-            // function itself already returns on every path (dead code
-            // that ASM's frame computation is fine with), and gives
-            // well-defined behavior otherwise, matching C's undefined
-            // behavior with a plain 0.
+        private void emitPrologue() {
+            // frameBase = $sp - frameSize; $sp = frameBase;
+            pushSp();
+            mv.visitLdcInsn(frameSize);
+            mv.visitInsn(LSUB);
+            mv.visitInsn(DUP2);
+            mv.visitVarInsn(LSTORE, frameBaseSlot);
+            putSp();
+            // spill incoming JVM parameters into their memory frame slot
+            List<CBCParameter> params = func.parameters();
+            for (int i = 0; i < params.size(); i++) {
+                CBCParameter p = params.get(i);
+                pushBuf();
+                pushAddressOf(p);
+                mv.visitInsn(L2I);
+                mv.visitVarInsn(paramWidths.get(i) == Width.LONG ? LLOAD : ILOAD,
+                        paramJvmSlots.get(i));
+                emitStore(asmWidthOf(p.type()));
+            }
+        }
+
+        private void emitEpilogue() {
+            // Default return value for implicit fall-off-the-end (mirrors
+            // C's undefined behavior with a well-defined 0, and gives the
+            // epilogue a value to load unconditionally).
+            if (!func.isVoid()) {
+                boolean wide = isWide(asmWidthOf(func.returnType()));
+                mv.visitInsn(wide ? LCONST_0 : ICONST_0);
+                mv.visitVarInsn(wide ? LSTORE : ISTORE, returnValueSlot);
+            }
+            mv.visitLabel(epilogueLabel);
+            // $sp = frameBase + frameSize
+            mv.visitVarInsn(LLOAD, frameBaseSlot);
+            mv.visitLdcInsn(frameSize);
+            mv.visitInsn(LADD);
+            putSp();
             if (func.isVoid()) {
                 mv.visitInsn(RETURN);
             }
-            else if (widthOf(func.returnType(), func.location()) == Width.LONG) {
-                mv.visitInsn(LCONST_0);
-                mv.visitInsn(LRETURN);
-            }
             else {
-                mv.visitInsn(ICONST_0);
-                mv.visitInsn(IRETURN);
+                boolean wide = isWide(asmWidthOf(func.returnType()));
+                mv.visitVarInsn(wide ? LLOAD : ILOAD, returnValueSlot);
+                mv.visitInsn(wide ? LRETURN : IRETURN);
             }
+        }
+
+        /** Compiles and stores a single global variable's initializer;
+         *  used only from <clinit>, on the no-function FunctionCompiler. */
+        void storeGlobalInit(long addr, Location loc, Expr initExpr,
+                net.loveruby.cflat.asm.Type width) {
+            currentLocation = loc;
+            pushBuf();
+            mv.visitLdcInsn(addr);
+            mv.visitInsn(L2I);
+            compile(initExpr);
+            emitStore(width);
         }
 
         private void error(String msg) {
@@ -357,6 +731,89 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         }
 
         //
+        // The simulated address space
+        //
+
+        private void pushSp() {
+            mv.visitFieldInsn(GETSTATIC, className, SP_FIELD, "J");
+        }
+
+        private void putSp() {
+            mv.visitFieldInsn(PUTSTATIC, className, SP_FIELD, "J");
+        }
+
+        private void pushBuf() {
+            mv.visitFieldInsn(GETSTATIC, className, BUF_FIELD, BUF_DESC);
+        }
+
+        /** Pushes the (long) address of a variable: a compile-time
+         *  constant for a global, frameBase-relative for a local/param. */
+        private void pushAddressOf(Entity e) {
+            Long staticOff = globalAddr.get(e);
+            if (staticOff != null) {
+                mv.visitLdcInsn(staticOff);
+                return;
+            }
+            Long off = frameOffset.get(e);
+            if (off != null) {
+                mv.visitVarInsn(LLOAD, frameBaseSlot);
+                mv.visitLdcInsn(off);
+                mv.visitInsn(LADD);
+                return;
+            }
+            error("address of an unsupported/external variable: " + e.name());
+            mv.visitInsn(LCONST_0);
+        }
+
+        /** Assumes [buf, index] are already on the stack; leaves the
+         *  loaded value (properly sign/zero-extended per "signed"). */
+        private void emitLoad(net.loveruby.cflat.asm.Type t, boolean signed) {
+            switch (t) {
+            case INT8:
+                mv.visitMethodInsn(INVOKEVIRTUAL, BUF_CLASS, "get", "(I)B", false);
+                if (!signed) { mv.visitLdcInsn(0xFF); mv.visitInsn(IAND); }
+                break;
+            case INT16:
+                mv.visitMethodInsn(INVOKEVIRTUAL, BUF_CLASS, "getShort", "(I)S", false);
+                if (!signed) { mv.visitLdcInsn(0xFFFF); mv.visitInsn(IAND); }
+                break;
+            case INT32:
+                mv.visitMethodInsn(INVOKEVIRTUAL, BUF_CLASS, "getInt", "(I)I", false);
+                break;
+            case INT64:
+                mv.visitMethodInsn(INVOKEVIRTUAL, BUF_CLASS, "getLong", "(I)J", false);
+                break;
+            }
+        }
+
+        /** Assumes [buf, index, value] are already on the stack (value
+         *  matching the JVM int/long category for width t); truncates
+         *  and stores exactly width t's bytes. Signedness doesn't matter
+         *  for a store: only the low bits are ever physically written. */
+        private void emitStore(net.loveruby.cflat.asm.Type t) {
+            switch (t) {
+            case INT8:
+                mv.visitInsn(I2B);
+                mv.visitMethodInsn(INVOKEVIRTUAL, BUF_CLASS, "put", "(IB)" + BUF_DESC, false);
+                mv.visitInsn(POP);
+                break;
+            case INT16:
+                mv.visitInsn(I2S);
+                mv.visitMethodInsn(INVOKEVIRTUAL, BUF_CLASS, "putShort", "(IS)" + BUF_DESC, false);
+                mv.visitInsn(POP);
+                break;
+            case INT32:
+                mv.visitMethodInsn(INVOKEVIRTUAL, BUF_CLASS, "putInt", "(II)" + BUF_DESC, false);
+                mv.visitInsn(POP);
+                break;
+            case INT64:
+                mv.visitMethodInsn(INVOKEVIRTUAL, BUF_CLASS, "putLong", "(IJ)" + BUF_DESC, false);
+                mv.visitInsn(POP);
+                break;
+            }
+        }
+
+        //
         // Statements
         //
 
@@ -365,21 +822,47 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             compile(e);
             boolean isVoidResult = (e instanceof Call) && callIsVoid((Call) e);
             if (!isVoidResult) {
-                popValue(e.type());
+                popValue(resultWidth(e));
             }
             return null;
         }
 
+        private boolean isNonScalarVar(Expr e) {
+            return (e instanceof Var) && !((Var) e).entity().type().isScalar();
+        }
+
         public Void visit(Assign node) {
-            Entity target = (node.lhs() instanceof Addr) ? ((Addr) node.lhs()).entity() : null;
-            compile(node.rhs());
-            if (target == null) {
-                error("assignment through a pointer/array/struct is not supported "
-                        + "by the JVM backend");
-                popValue(node.rhs().type());
+            if (isNonScalarVar(node.rhs())) {
+                error("whole struct/union assignment is not supported by the JVM backend; "
+                        + "copy members individually or use a pointer");
                 return null;
             }
-            storeEntity(target, node.rhs().type());
+            pushBuf();
+            net.loveruby.cflat.asm.Type storeWidth;
+            if (node.lhs() instanceof Addr) {
+                // A plain "x = ..." assignment: we know the exact target
+                // variable, so store at its true declared width, however
+                // wide the compiled RHS value actually is (see
+                // slotSize()'s doc comment: narrowing conversions don't
+                // get a cast node, so e.g. "char c = 1000;" arrives here
+                // as a full-width int and must still be truncated to 1
+                // byte on the way into memory).
+                Entity e = ((Addr) node.lhs()).entity();
+                pushAddressOf(e);
+                storeWidth = asmWidthOf(e.type());
+            }
+            else {
+                // Assigning through a pointer/array/struct access: there
+                // is no single named target to ask, so fall back to the
+                // RHS's own (usually already-correct) width, same as for
+                // a load through the equivalent Mem node.
+                compile(node.lhs());
+                storeWidth = resultWidth(node.rhs());
+            }
+            mv.visitInsn(L2I);
+            compile(node.rhs());
+            coerceWidth(resultWidth(node.rhs()), isWide(storeWidth));
+            emitStore(storeWidth);
             return null;
         }
 
@@ -387,7 +870,7 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             compile(node.cond());
             org.objectweb.asm.Label thenLabel = getLabel(node.thenLabel());
             org.objectweb.asm.Label elseLabel = getLabel(node.elseLabel());
-            if (isWide(node.cond().type())) {
+            if (isWide(resultWidth(node.cond()))) {
                 mv.visitInsn(LCONST_0);
                 mv.visitInsn(LCMP);
             }
@@ -403,7 +886,7 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
 
         public Void visit(Switch node) {
             compile(node.cond());
-            boolean wide = isWide(node.cond().type());
+            boolean wide = isWide(resultWidth(node.cond()));
             int scratch = wide ? switchScratchLong : switchScratchInt;
             mv.visitVarInsn(wide ? LSTORE : ISTORE, scratch);
             for (Case c : node.cases()) {
@@ -430,11 +913,9 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         public Void visit(Return node) {
             if (node.expr() != null) {
                 compile(node.expr());
-                mv.visitInsn(isWide(node.expr().type()) ? LRETURN : IRETURN);
+                mv.visitVarInsn(isWide(resultWidth(node.expr())) ? LSTORE : ISTORE, returnValueSlot);
             }
-            else {
-                mv.visitInsn(RETURN);
-            }
+            mv.visitJumpInsn(GOTO, epilogueLabel);
             return null;
         }
 
@@ -449,14 +930,18 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             case BIT_AND: case BIT_OR: case BIT_XOR: {
                 boolean wide = isWide(node.type());
                 compile(node.left());
+                coerceWidth(resultWidth(node.left()), wide);
                 compile(node.right());
+                coerceWidth(resultWidth(node.right()), wide);
                 emitArith(op, wide);
                 break;
             }
             case U_DIV: case U_MOD: {
                 boolean wide = isWide(node.type());
                 compile(node.left());
+                coerceWidth(resultWidth(node.left()), wide);
                 compile(node.right());
+                coerceWidth(resultWidth(node.right()), wide);
                 String owner = wide ? "java/lang/Long" : "java/lang/Integer";
                 String desc = wide ? "(JJ)J" : "(II)I";
                 String name = (op == Op.U_DIV) ? "divideUnsigned" : "remainderUnsigned";
@@ -466,8 +951,9 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             case BIT_LSHIFT: case BIT_RSHIFT: case ARITH_RSHIFT: {
                 boolean wide = isWide(node.type());
                 compile(node.left());
+                coerceWidth(resultWidth(node.left()), wide);
                 compile(node.right());
-                coerceToInt(node.right().type());
+                coerceToInt(resultWidth(node.right()));
                 int opcode;
                 switch (op) {
                 case BIT_LSHIFT:   opcode = wide ? LSHL  : ISHL;  break;
@@ -478,14 +964,32 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                 break;
             }
             default: {
-                boolean operandWide = isWide(node.left().type());
+                boolean operandWide = isWide(resultWidth(node.left()));
                 compile(node.left());
                 compile(node.right());
+                coerceWidth(resultWidth(node.right()), operandWide);
                 emitComparison(op, operandWide);
                 break;
             }
             }
             return null;
+        }
+
+        /** Widens/narrows a just-compiled value from its actual width to
+         *  match what the operation using it needs. IRGenerator's own
+         *  internal lowering (e.g. the element-size*index multiplication
+         *  built for array indexing) sometimes combines operands of
+         *  different widths directly, unlike type-checked source
+         *  expressions (where both sides of a binary op are always cast
+         *  to a common type already). */
+        private void coerceWidth(net.loveruby.cflat.asm.Type actual, boolean wantWide) {
+            boolean actualWide = isWide(actual);
+            if (wantWide && !actualWide) {
+                mv.visitInsn(I2L);
+            }
+            else if (!wantWide && actualWide) {
+                mv.visitInsn(L2I);
+            }
         }
 
         private void emitArith(Op op, boolean wide) {
@@ -624,12 +1128,17 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                 return;
             }
             if (srcSize <= 4 && dstSize <= 4) {
+                // The source value may come straight from a raw memory
+                // read (e.g. Mem, or a Var of an unsigned narrow type)
+                // and isn't guaranteed to already be properly extended,
+                // so always normalize from its true width first...
+                if (srcSize < 4) {
+                    truncateInt(srcSize, srcSigned);
+                }
+                // ...then truncate further if narrowing.
                 if (dstSize < srcSize) {
                     truncateInt(dstSize, srcSigned);
                 }
-                // widening within <=4 bytes is a no-op: narrow values are
-                // always kept fully sign/zero-extended to fill the 32-bit
-                // JVM int that holds them.
                 return;
             }
             if (srcSize <= 4 && dstSize == 8) {
@@ -641,7 +1150,7 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                             "toUnsignedLong", "(I)J", false);
                 }
                 else {
-                    // top bits are already 0 for a <32-bit unsigned value
+                    truncateInt(srcSize, false);  // zero-extend to 32 bits first
                     mv.visitInsn(I2L);
                 }
                 return;
@@ -683,14 +1192,12 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
 
         private boolean callIsVoid(Call call) {
             if (!call.isStaticCall()) return false;
-            Function f = call.function();
-            if (f instanceof UndefinedFunction) {
-                String name = f.name();
-                if (name.equals("puts") || name.equals("printf")) return true;
-                if (name.equals("putchar")) return false;
-                return f.isVoid();
-            }
-            return f.isVoid();
+            // putchar/puts/printf are all declared to return int in
+            // stdio.hb, so the generic f.isVoid() check below already
+            // says "not void" for them; compilePutchar/compilePuts/
+            // compilePrintf always leave a (possibly dummy) int on the
+            // stack to match.
+            return call.function().isVoid();
         }
 
         private void compileCall(Call node) {
@@ -733,26 +1240,36 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             mv.visitFieldInsn(GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
         }
 
+        /** Compiles a char* expression and leaves a real Java String
+         *  (read from $mem at run time) on the stack. */
+        private void compileCString(Expr arg) {
+            compile(arg);
+            if (!isWide(arg.type())) {
+                mv.visitInsn(I2L);
+            }
+            mv.visitMethodInsn(INVOKESTATIC, className, STR_METHOD,
+                    "(J)Ljava/lang/String;", false);
+        }
+
         private void compilePutchar(Call node) {
             Expr arg = node.args().get(0);
             loadSystemOut();
             compile(arg);
-            coerceToInt(arg.type());
+            coerceToInt(resultWidth(arg));
             mv.visitInsn(DUP_X1);
             mv.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "write", "(I)V", false);
         }
 
         private void compilePuts(Call node) {
-            Expr arg = node.args().get(0);
-            if (!(arg instanceof Str)) {
-                error("puts() is only supported with a string literal argument "
-                        + "by the JVM backend");
-                return;
-            }
             loadSystemOut();
-            mv.visitLdcInsn(((Str) arg).entry().value());
+            compileCString(node.args().get(0));
             mv.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "println",
                     "(Ljava/lang/String;)V", false);
+            // puts()/printf() are declared to return int (the real libc
+            // semantics is a character count / EOF); tracking the real
+            // count isn't worth it here, so always report success (0)
+            // for whatever, rare, code actually looks at the result.
+            mv.visitInsn(ICONST_0);
         }
 
         private void compilePrintf(Call node) {
@@ -761,6 +1278,7 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             if (!(fmtExpr instanceof Str)) {
                 error("printf() is only supported with a string literal format "
                         + "by the JVM backend");
+                mv.visitInsn(ICONST_0);
                 return;
             }
             String fmt = ((Str) fmtExpr).entry().value();
@@ -802,11 +1320,13 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                     break;
                 default:
                     error("unsupported printf format specifier by the JVM backend: %" + spec);
+                    mv.visitInsn(ICONST_0);
                     return;
                 }
                 i = j + 1;
             }
             flushLiteral(literal);
+            mv.visitInsn(ICONST_0);
         }
 
         private void flushLiteral(StringBuilder sb) {
@@ -827,7 +1347,7 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             Expr arg = args.get(idx);
             loadSystemOut();
             compile(arg);
-            boolean wide = isWide(arg.type());
+            boolean wide = isWide(resultWidth(arg));
             if (unsigned) {
                 if (wide) {
                     mv.visitMethodInsn(INVOKESTATIC, "java/lang/Long",
@@ -855,7 +1375,7 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             Expr arg = args.get(idx);
             loadSystemOut();
             compile(arg);
-            coerceToInt(arg.type());
+            coerceToInt(resultWidth(arg));
             mv.visitInsn(I2C);
             mv.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "print", "(C)V", false);
             return idx + 1;
@@ -866,45 +1386,45 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                 error("not enough arguments for printf format");
                 return idx;
             }
-            Expr arg = args.get(idx);
-            if (!(arg instanceof Str)) {
-                error("printf %s is only supported with a string literal argument "
-                        + "by the JVM backend");
-                return idx + 1;
-            }
             loadSystemOut();
-            mv.visitLdcInsn(((Str) arg).entry().value());
+            compileCString(args.get(idx));
             mv.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "print",
                     "(Ljava/lang/String;)V", false);
             return idx + 1;
         }
 
         public Void visit(Addr node) {
-            error("taking the address of a variable is not supported by the JVM backend");
-            pushDummy(node.type());
+            pushAddressOf(node.entity());
             return null;
         }
 
         public Void visit(Mem node) {
-            error("pointer dereference is not supported by the JVM backend");
-            pushDummy(node.type());
+            pushBuf();
+            compile(node.expr());
+            mv.visitInsn(L2I);
+            // Signedness isn't available at this IR level (only the
+            // width is); real C programs already wrap a narrow Mem load
+            // in an explicit cast whenever the sign actually matters
+            // (assignment, promotion, comparison, ...), so a plain
+            // (Java-default, sign-extended) read here is safe -- see the
+            // class doc.
+            emitLoad(node.type(), true);
             return null;
         }
 
         public Void visit(Var node) {
             Entity e = node.entity();
-            Integer slot = slots.get(e);
-            if (slot != null) {
-                mv.visitVarInsn(isWide(node.type()) ? LLOAD : ILOAD, slot);
+            if (!e.type().isScalar()) {
+                error("cannot use a struct/union/array value directly (as an argument, "
+                        + "in an expression, etc.) by the JVM backend; use a pointer instead: "
+                        + e.name());
+                mv.visitInsn(LCONST_0);
                 return null;
             }
-            GlobalInfo g = globals.get(e);
-            if (g != null) {
-                mv.visitFieldInsn(GETSTATIC, className, g.name, g.width.descriptor);
-                return null;
-            }
-            error("reference to an unsupported/external variable: " + e.name());
-            pushDummy(node.type());
+            pushBuf();
+            pushAddressOf(e);
+            mv.visitInsn(L2I);
+            emitLoad(asmWidthOf(e.type()), e.type().isSigned());
             return null;
         }
 
@@ -919,39 +1439,14 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         }
 
         public Void visit(Str node) {
-            error("string literals are only supported as direct arguments to "
-                    + "putchar/puts/printf by the JVM backend");
-            pushDummy(node.type());
+            Long addr = stringAddr.get(node.entry());
+            if (addr == null) {
+                error("internal error: unresolved string literal");
+                mv.visitInsn(LCONST_0);
+                return null;
+            }
+            mv.visitLdcInsn(addr);
             return null;
-        }
-
-        private void storeEntity(Entity e, net.loveruby.cflat.asm.Type valueType) {
-            // Compound assignment (i <<= 1) and ++/-- build their new value
-            // as a plain Bin at the narrow declared width without going
-            // through TypeChecker's usual implicit-cast machinery, so the
-            // raw 32-bit JVM computation is not yet wrapped/truncated to
-            // that width; normalize it here using the *variable's* own
-            // declared signedness (a plain "=" assignment is already
-            // correctly cast by the front-end, so this is a no-op there).
-            Width w = widthOf(e.type(), e.location());
-            if (w == Width.INT && e.type().isInteger()) {
-                int size = (int) e.type().size();
-                if (size < 4) {
-                    truncateInt(size, e.type().isSigned());
-                }
-            }
-            Integer slot = slots.get(e);
-            if (slot != null) {
-                mv.visitVarInsn(w == Width.LONG ? LSTORE : ISTORE, slot);
-                return;
-            }
-            GlobalInfo g = globals.get(e);
-            if (g != null) {
-                mv.visitFieldInsn(PUTSTATIC, className, g.name, g.width.descriptor);
-                return;
-            }
-            error("assignment to an unsupported/external variable: " + e.name());
-            popValue(valueType);
         }
     }
 }

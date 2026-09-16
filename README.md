@@ -82,27 +82,41 @@ produced class is named after the source file, sanitized into a valid
 Java identifier (e.g. `while-break.cb` becomes class `while_break`), so
 that the file name and the class name it contains always match.
 
-This backend only supports the parts of cflat that have a reasonable
-equivalent on the JVM:
+This backend supports essentially all of core cflat, including a real
+C-style address space:
 
   * `char`/`short`/`int`/`long`, signed and unsigned, mapped to JVM `int`
     or `long`; arithmetic, bitwise ops, shifts, comparisons and casts.
   * control flow: `if`, `while`, `for`, `do...while`, `switch`, `goto`,
     `break`/`continue`.
-  * functions (including recursion) and global/static scalar variables.
-  * `main(void)` and `main(int argc, char **argv)`; `argc` is derived
-    from the JVM's own `String[] args`, `argv` is not usable.
+  * functions (including recursion) and global/static variables.
+  * **pointers, arrays, structs and unions**: `&x`, `*p`, `p[i]`, `p->m`,
+    pointer arithmetic/comparison/difference, `sizeof`, and `char*`
+    strings (including string literals assigned to variables, not just
+    passed straight to a print call) all work. The JVM has no address
+    space of its own, so this backend builds one: a single big byte
+    array simulates the whole process memory, every global gets a fixed
+    offset into it, and every function call bump-allocates and releases
+    its own "stack frame" region from it, mirroring how the x86 backend
+    lays out its own real stack frame. `main`'s `argv` is backed by a
+    real, freshly-built array of C strings.
+  * `main(void)` and `main(int argc, char **argv)`; `argc`/`argv` are
+    derived from the JVM's own `String[] args` (with a synthetic
+    `argv[0]` standing in for the program name).
 
-Because the JVM has no C-style address space, **pointers, arrays, structs
-and unions are not supported**: a pointer value is only ever carried
-around as an opaque, unusable handle (so an unused `char **argv`
-parameter is harmless), while dereferencing one (`*p`, `p[i]`, `p->m`,
-`&x`) is reported as a normal compile error rather than silently
-miscompiled. Calling a function that isn't defined in the same source
-file is rejected too, except for three libc intrinsics translated to
-real JVM calls so simple, printf-based programs still work:
-`putchar(int)`, `puts(char*)` and `printf(char*, ...)` (the format/string
-arguments must be string literals for the latter two).
+Remaining gaps: passing or returning a struct/union *by value* (as
+opposed to through a pointer) isn't supported, nor is assigning one
+struct/union to another as a whole -- copy members individually, or use
+pointers. Function pointers aren't supported at all (neither `&f` nor
+calling through one). Calling a function that isn't defined in the same
+source file is rejected too, except for three libc intrinsics translated
+to real JVM calls so printf-based programs work: `putchar(int)`,
+`puts(char*)` and `printf(char*, ...)` -- the format string itself must
+still be a compile-time literal, but `puts`/`%s` now accept any `char*`
+expression, not just literals. Lastly, `long` and every pointer type are
+real 8-byte JVM `long`s here (see the class comment on
+`sysdep/jvm/CodeGenerator.java`), so `sizeof(long)`/`sizeof(T*)` are 8,
+not 4 like on the (32-bit-only) x86 backend.
 
 Original descrition
 ====================
