@@ -154,14 +154,18 @@ public class Compiler {
     }
 
     /** JVM backend only: writes/updates "NativeLibrary.java" next to
-     *  destPath if the program called an external function needing a
-     *  stub (see CodeGenerator#nativeLibrarySource() for what "needing
-     *  one" means, and NativeLibrary's own generated class doc for the
-     *  overall mechanism). Never overwrites an existing file -- a
-     *  user's hand-written implementations in it must survive
-     *  recompiling the .cb file -- but does warn about any stub name
-     *  the existing file doesn't seem to define, since otherwise a
-     *  missing one only shows up as a NoSuchMethodError at run time. */
+     *  destPath, then compiles it with javac so "NativeLibrary.class" is
+     *  ready to go alongside it (see CodeGenerator#nativeLibrarySource()
+     *  and NativeLibrary's own generated class doc for the overall
+     *  mechanism). This is no longer optional the way it used to be:
+     *  the compiled program now extends NativeLibrary directly, so it
+     *  can't even be loaded without NativeLibrary.class present.  Never
+     *  overwrites an existing NativeLibrary.java -- a user's hand-written
+     *  implementations in it must survive recompiling the .cb file --
+     *  but does warn about any stub name the existing file doesn't seem
+     *  to define, since otherwise a missing one only shows up as a
+     *  NoSuchMethodError at run time; either way, it's (re)compiled with
+     *  javac so edits take effect without a separate manual step. */
     private void writeNativeLibrarySource(String destPath, AssemblyCode asm)
             throws FileException {
         if (!(asm instanceof JVMAssemblyCode)) {
@@ -176,32 +180,81 @@ public class Compiler {
         File file = new File(dir, "NativeLibrary.java");
         if (!file.exists()) {
             writeFile(file.getPath(), source);
-            errorHandler.warn(file.getPath() + ": generated with stub(s) for "
-                    + jvmAsm.nativeStubNames() + " -- edit it to implement "
-                    + "them, then compile it with javac before running the "
-                    + "program");
-            return;
-        }
-        String existing;
-        try {
-            existing = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
-        }
-        catch (IOException ex) {
-            errorHandler.warn(file.getPath() + ": could not check it for "
-                    + "missing native stubs: " + ex.getMessage());
-            return;
-        }
-        List<String> missing = new ArrayList<String>();
-        for (String name : jvmAsm.nativeStubNames()) {
-            if (!existing.contains(name)) {
-                missing.add(name);
+            if (!jvmAsm.nativeStubNames().isEmpty()) {
+                errorHandler.warn(file.getPath() + ": generated with stub(s) for "
+                        + jvmAsm.nativeStubNames() + " -- edit it to implement "
+                        + "them, then re-run cbc to recompile it");
             }
         }
-        if (!missing.isEmpty()) {
-            errorHandler.warn(file.getPath() + ": missing an implementation "
-                    + "for " + missing + " (not overwriting your existing "
-                    + "file -- add these to it by hand)");
+        else {
+            String existing;
+            try {
+                existing = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
+            }
+            catch (IOException ex) {
+                throw new FileException(file.getPath() + ": could not check it for "
+                        + "missing native stubs: " + ex.getMessage());
+            }
+            List<String> missing = new ArrayList<String>();
+            for (String name : jvmAsm.nativeStubNames()) {
+                if (!existing.contains(name)) {
+                    missing.add(name);
+                }
+            }
+            if (!missing.isEmpty()) {
+                errorHandler.warn(file.getPath() + ": missing an implementation "
+                        + "for " + missing + " (not overwriting your existing "
+                        + "file -- add these to it by hand)");
+            }
         }
+        compileNativeLibrary(file);
+    }
+
+    /** Compiles NativeLibrary.java with javac, using this very process's
+     *  own classpath (which already has StandardLibrary.class on it,
+     *  since cbc itself was built from the same source tree -- see
+     *  bin/build.sh) so it can resolve the "extends StandardLibrary".
+     *  Always safe to run unconditionally: freshly generated source
+     *  compiles as-is (an unimplemented stub is valid Java, it just
+     *  throws NotImplementedException), and re-running it after a user
+     *  edit is exactly how those edits take effect. */
+    private void compileNativeLibrary(File file) throws FileException {
+        String classpath = System.getProperty("java.class.path");
+        Process proc;
+        try {
+            proc = new ProcessBuilder("javac", "-cp", classpath,
+                    "-d", file.getParentFile().getPath(), file.getPath())
+                    .redirectErrorStream(true)
+                    .start();
+        }
+        catch (IOException ex) {
+            throw new FileException(file.getPath() + ": could not run javac: " + ex.getMessage());
+        }
+        String output;
+        try {
+            output = readAll(proc.getInputStream());
+            proc.waitFor();
+        }
+        catch (IOException ex) {
+            throw new FileException(file.getPath() + ": could not read javac's output: " + ex.getMessage());
+        }
+        catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new FileException(file.getPath() + ": javac was interrupted");
+        }
+        if (proc.exitValue() != 0) {
+            throw new FileException(file.getPath() + ": javac failed:\n" + output);
+        }
+    }
+
+    private String readAll(InputStream in) throws IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        byte[] buf = new byte[4096];
+        int n;
+        while ((n = in.read(buf)) != -1) {
+            out.write(buf, 0, n);
+        }
+        return new String(out.toByteArray(), StandardCharsets.UTF_8);
     }
 
     public AST parseFile(String path, Options opts)

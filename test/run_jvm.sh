@@ -78,8 +78,12 @@ compile_case() {
     if [ $? -ne 0 ]; then
         return 1
     fi
+    # Every JVM-backend program now compiles alongside a NativeLibrary.class
+    # (it extends NativeLibrary directly -- see CodeGenerator's class doc),
+    # so this can no longer just take the first *.class file: exclude it by
+    # its fixed, hardcoded name to find the actual program class.
     local cls
-    cls=$(cd "$work" && ls -- *.class 2>/dev/null | head -1)
+    cls=$(cd "$work" && ls -- *.class 2>/dev/null | grep -v '^NativeLibrary\.class$' | head -1)
     [ -n "$cls" ] || return 1
     echo "${cls%.class}"
 }

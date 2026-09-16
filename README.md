@@ -391,55 +391,65 @@ not 4 like on the (32-bit-only) x86 backend.
 
 ### Calling external functions: StandardLibrary and NativeLibrary
 
-A call to a function declared (e.g. via `import`) but not defined in the
-same file -- anything other than `putchar`/`puts`/`printf`, which the
-compiler already knows about directly -- compiles to a call to
-`NativeLibrary`, a small, human-readable `NativeLibrary.java` that `cbc`
-generates *as source*, next to the `.class` file, alongside the
-hand-written `net.loveruby.cflat.sysdep.jvm.runtime.StandardLibrary`:
+The compiled program's own class `extends NativeLibrary`, a small,
+human-readable `NativeLibrary.java` that `cbc` generates *as source*, next
+to the `.class` file, and compiles with `javac` right after generating it
+(using cbc's own runtime classpath, so it can resolve the class below);
+`NativeLibrary` in turn `extends`
+`net.loveruby.cflat.sysdep.jvm.runtime.StandardLibrary`, hand-written and
+checked into cbc itself. Because of that chain, a call to a function
+declared (e.g. via `import`) but not defined in the same file -- anything
+other than `putchar`/`puts`/`printf`, which the compiler already knows
+about directly -- is simply a call to an *inherited* method:
 
-  * **`StandardLibrary`** is checked into cbc itself; one instance is
-    constructed per compiled program (in the generated `<clinit>`, held
-    in a `$lib` static field every call goes through) over that
-    program's own simulated address space, and already implements a
-    useful chunk of libc: `<ctype.h>` (`isdigit`, `isalpha`, `isalnum`,
-    `isspace`, `isupper`, `islower`, `toupper`, `tolower`), `<string.h>`
-    (`strlen`, `strcpy`, `strncpy`, `strcat`, `strncat`, `strcmp`,
-    `strncmp`, `strchr`, `memcpy`, `memmove`, `memset`, `memcmp`), and
-    `<stdlib.h>`'s numeric conversions (`abs`, `labs`, `atoi`, `atol`,
-    `atof`) -- all operating on memory the caller already owns, since
-    this backend has no general-purpose `malloc`/`free` exposed to
-    cflat code yet. Add a `public` instance method there to make
-    another function available to every compiled program without
-    regenerating anything: its parameters/return type are the cflat
-    ones, mapped the way `CodeGenerator#buildDescriptor` always maps
-    them (`int`/`long`/`float`/`double`); an implementation that needs
-    to read/write memory directly uses the inherited `mem` field (this
+  * **`StandardLibrary`** already implements a useful chunk of libc:
+    `<ctype.h>` (`isdigit`, `isalpha`, `isalnum`, `isspace`, `isupper`,
+    `islower`, `toupper`, `tolower`), `<string.h>` (`strlen`, `strcpy`,
+    `strncpy`, `strcat`, `strncat`, `strcmp`, `strncmp`, `strchr`,
+    `memcpy`, `memmove`, `memset`, `memcmp`), and `<stdlib.h>`'s numeric
+    conversions (`abs`, `labs`, `atoi`, `atol`, `atof`) -- all operating
+    on memory the caller already owns, since this backend has no
+    general-purpose `malloc`/`free` exposed to cflat code yet. Add a
+    `public` instance method there to make another function available to
+    every compiled program without regenerating anything: its
+    parameters/return type are the cflat ones, mapped the way
+    `CodeGenerator#buildDescriptor` always maps them
+    (`int`/`long`/`float`/`double`); an implementation that needs to
+    read/write memory directly uses the inherited `mem` field (this
     program's whole simulated address space -- a cflat pointer is a
     plain `long` byte offset into it, cast with `(int)` to index it),
     and one that doesn't simply never mentions it.
-  * **`NativeLibrary`** is generated fresh per program, `extends
-    StandardLibrary` (so a hand-written override can use `mem` the same
-    way), and contains one stub -- throwing `NotImplementedException`
-    -- for each external function the program calls that isn't already
-    in `StandardLibrary` (checked by a plain hardcoded name list in
-    `CodeGenerator`, not reflection, so generating it never needs
-    `StandardLibrary` itself loaded or even built). A name already in
-    `StandardLibrary` is called on the one shared `$lib` instance
-    directly; anything else gets a fresh `NativeLibrary` instance
-    constructed at the call site instead (its own existence isn't known
-    until every function has been compiled, unlike `StandardLibrary`'s,
-    so it can't be cached in a field set up as early as `<clinit>`).
+  * **`NativeLibrary`** is generated fresh per program and contains one
+    stub -- throwing `NotImplementedException` -- for each external
+    function the program calls that isn't already in `StandardLibrary`
+    (checked by a plain hardcoded name list in `CodeGenerator`, not
+    reflection, so generating it never needs `StandardLibrary` itself
+    loaded or even built).
+
+Since the compiled class extends this chain directly, every call --
+whether to a name already in `StandardLibrary` or to a `NativeLibrary`
+stub -- goes through the very same mechanism: the one instance of the
+compiled class itself, constructed once in the generated `<clinit>` and
+held in a `$lib` static field, since a compiled cflat function is a
+*static* JVM method with no `this` of its own to call an inherited method
+on directly.
 
 Compiling a program that calls such a function always succeeds; only
 actually *calling* an unimplemented one fails, at run time, with
 `NotImplementedException` naming it -- edit the generated
-`NativeLibrary.java` by hand to implement it, then `javac` it before
-running the program. **`cbc` never overwrites an existing
-`NativeLibrary.java`** (your edits always survive recompiling the `.cb`
-file); if the program starts calling a function the existing file doesn't
-seem to define yet, that's reported as a warning naming it, not silently
-patched in or silently left to fail at run time as a `NoSuchMethodError`.
+`NativeLibrary.java` by hand to implement it and re-run `cbc`, which
+recompiles it with `javac` automatically (no separate manual step).
+**`cbc` never overwrites an existing `NativeLibrary.java`** (your edits
+always survive recompiling the `.cb` file, and are picked up by that same
+automatic recompile); if the program starts calling a function the
+existing file doesn't seem to define yet, that's reported as a warning
+naming it, not silently patched in or silently left to fail at run time as
+a `NoSuchMethodError`. `NativeLibrary.class` is required for the compiled
+program to even load now (it's the program's own superclass), so unlike
+before, this recompilation step is never optional -- but since freshly
+generated or hand-edited source is always valid Java (an unimplemented
+stub just throws), there's nothing to wait on the user for before running
+it.
 
 This is JVM-only: the x86 backend links against real external symbols the
 normal way (`-lc`, `-lcbc`, ...), so it already handles an external
