@@ -839,6 +839,13 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
 
     private net.loveruby.cflat.asm.Type asmType(Type t) {
         if (t.isVoid()) return int_t();
+        // A struct/union can be any size, not just 1/2/4/8, so it has no
+        // direct asm.Type of its own; a funcall node still needs *some*
+        // width for its Call IR node even when its result is a struct/
+        // union (returned/passed by value through a backend-specific
+        // convention, e.g. a hidden pointer -- see sysdep/jvm), so use
+        // the pointer width as a stand-in.
+        if (t.isStruct() || t.isUnion()) return ptr_t();
         return net.loveruby.cflat.asm.Type.get(t.size());
     }
 

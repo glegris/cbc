@@ -406,6 +406,22 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator,
 
     // #@@range/compileFunctionBody{
     private void compileFunctionBody(AssemblyCode file, DefinedFunction func) {
+        if (isAggregate(func.returnType())) {
+            errorHandler.error(func.location(),
+                    "returning a struct/union by value is not supported by the x86 "
+                            + "backend (the JVM backend, -arch=jvm, supports it): "
+                            + func.returnType());
+            return;
+        }
+        for (CBCParameter param : func.parameters()) {
+            if (isAggregate(param.type())) {
+                errorHandler.error(param.location(),
+                        "passing a struct/union by value is not supported by the x86 "
+                                + "backend (the JVM backend, -arch=jvm, supports it): "
+                                + param.type());
+                return;
+            }
+        }
         StackFrameInfo frame = new StackFrameInfo();
         // #@@range/cfb_locate{
         locateParameters(func.parameters());
@@ -648,7 +664,19 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator,
      */
     // #@@range/Call{
     public Void visit(Call node) {
+        if (node.isStaticCall() && node.function() instanceof DefinedFunction
+                && isAggregate(((DefinedFunction) node.function()).returnType())) {
+            errorHandler.error("returning a struct/union by value is not supported "
+                    + "by the x86 backend (the JVM backend, -arch=jvm, supports it)");
+        }
         for (Expr arg : ListUtils.reverse(node.args())) {
+            if (isAggregateVar(arg)) {
+                errorHandler.error("passing a struct/union by value is not supported "
+                        + "by the x86 backend (the JVM backend, -arch=jvm, supports it)");
+                as.mov(imm(0), ax());
+                as.push(ax());
+                continue;
+            }
             compile(arg);
             as.push(ax());
         }
@@ -664,6 +692,19 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator,
         return null;
     }
     // #@@}
+
+    /** struct/union by-value parameters/returns and whole-value
+     *  assignment are allowed by the type checker (so the JVM backend
+     *  can support them), but this backend doesn't implement that ABI;
+     *  reject cleanly instead of the Var/Assign codegen crashing on a
+     *  non-scalar value it can't fit in one register. */
+    private boolean isAggregate(net.loveruby.cflat.type.Type t) {
+        return t.isStruct() || t.isUnion();
+    }
+
+    private boolean isAggregateVar(Expr e) {
+        return (e instanceof Var) && isAggregate(((Var) e).getEntityForce().type());
+    }
 
     // #@@range/Return{
     public Void visit(Return node) {
@@ -953,6 +994,11 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator,
 
     // #@@range/Assign{
     public Void visit(Assign node) {
+        if (isAggregateVar(node.rhs())) {
+            errorHandler.error("assigning a struct/union by value is not supported "
+                    + "by the x86 backend (the JVM backend, -arch=jvm, supports it)");
+            return null;
+        }
         if (node.lhs().isAddr() && node.lhs().memref() != null) {
             compile(node.rhs());
             store(ax(node.lhs().type()), node.lhs().memref());

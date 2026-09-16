@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 import static org.objectweb.asm.Opcodes.*;
 
@@ -35,14 +36,41 @@ import static org.objectweb.asm.Opcodes.*;
  * special-casing needed. A tiny bump-allocated heap arena ("$hp") backs
  * argv construction (see emitMainBridge); there is no free().
  *
- * Remaining limitations: passing/returning a struct or union BY VALUE
- * (as opposed to through a pointer) is not supported, nor is assigning
- * one struct/union to another as a whole (copy members individually, or
- * use pointers). Function pointers are not supported at all, neither
- * taking one's address nor (obviously) calling through one. Calling a
- * function that isn't defined in the same source file is rejected too,
- * except for three libc intrinsics translated to real JVM calls so
- * printf-based programs work: putchar(int), puts(char*) and
+ * struct/union BY VALUE (as a parameter, a return value, or the whole
+ * target of an assignment) is supported through a hidden-pointer
+ * convention: a struct/union parameter's actual JVM slot is the address
+ * of a fresh copy the *caller* makes before the call (so the callee
+ * can't observe changes back in the caller, matching C's by-value
+ * semantics); a struct/union-returning function gets one extra trailing
+ * "long" parameter -- the address to write its result into, which it
+ * also returns for convenience -- supplied by the caller as either its
+ * assignment target's own address (avoiding a redundant copy) or a
+ * freshly bump-allocated scratch buffer. (TypeChecker now allows this
+ * everywhere, but the x86 backend does not implement this ABI and
+ * rejects it at code generation time instead.) Only a *named* struct/
+ * union variable is accepted in these by-value positions (as the source
+ * of a copy, an argument, or a return expression); a struct/union
+ * produced through a more complex expression (e.g. dereferencing a
+ * pointer, "*p") is rejected with a clear error rather than silently
+ * mishandled, since nothing downstream of IRGenerator can tell such an
+ * expression apart from an ordinary pointer-sized value -- assign it to
+ * a plain variable first.
+ *
+ * Function pointers are supported for functions defined in this same
+ * file: taking one's address (&f, or a bare function name used as a
+ * value) resolves to a small compile-time-assigned id, and calling
+ * through one dispatches through a generated lookup-switch method (one
+ * per distinct signature) that maps that id back to a real invokestatic
+ * -- there's no such thing as a raw callable address on the JVM. This
+ * does not extend to the three libc intrinsics below (they have no real
+ * method to jump to) or to any other external/undefined function. Only
+ * calling through a plain function-pointer variable is supported (not a
+ * more complex expression, e.g. an array element or a struct member),
+ * for the same reason as above.
+ *
+ * Calling a function that isn't defined in the same source file is
+ * rejected, except for three libc intrinsics translated to real JVM
+ * calls so printf-based programs work: putchar(int), puts(char*) and
  * printf(char*, ...) -- the format string itself must still be a
  * compile-time string literal, but puts/%s now accept any char*
  * expression (read from memory at run time, not just literals).
@@ -76,6 +104,14 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
     private final List<ConstantEntry> stringLiteralsInOrder = new ArrayList<ConstantEntry>();
     private long staticEnd;
 
+    // Function pointers: every non-vararg defined function gets a small
+    // id (its "address"); functions sharing a descriptor share a
+    // dispatcher method that maps an id back to a real invokestatic.
+    private final Map<DefinedFunction, Long> functionId = new HashMap<DefinedFunction, Long>();
+    private final Map<String, List<DefinedFunction>> functionsByDescriptor =
+            new HashMap<String, List<DefinedFunction>>();
+    private long nextFunctionId = 1;  // 0 means "no function" (NULL)
+
     public CodeGenerator(ErrorHandler errorHandler) {
         this.errorHandler = errorHandler;
     }
@@ -83,6 +119,7 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
     public net.loveruby.cflat.sysdep.AssemblyCode generate(IR ir) {
         className = NameUtils.toJavaIdentifier(baseName(ir.fileName()));
         computeStaticLayout(ir);
+        assignFunctionIds(ir);
 
         cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES);
         cw.visit(V1_8, ACC_PUBLIC | ACC_SUPER, className, null, "java/lang/Object", null);
@@ -103,6 +140,7 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             }
             compileFunction(f);
         }
+        emitDispatchers();
 
         if (mainFunction != null && !errorHandler.errorOccured()) {
             emitMainBridge(mainFunction);
@@ -430,19 +468,19 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         }
         if (params.size() >= 1) {
             mv.visitVarInsn(ILOAD, 1);
-            if (paramOrReturnWidth(params.get(0).type(), params.get(0).location()) == Width.LONG) {
+            if (paramOrReturnWidth(params.get(0).type()) == Width.LONG) {
                 mv.visitInsn(I2L);
             }
         }
         if (params.size() >= 2) {
             mv.visitVarInsn(LLOAD, 2);
-            if (paramOrReturnWidth(params.get(1).type(), params.get(1).location()) != Width.LONG) {
+            if (paramOrReturnWidth(params.get(1).type()) != Width.LONG) {
                 mv.visitInsn(L2I);
             }
         }
         mv.visitMethodInsn(INVOKESTATIC, className, "main", methodDescriptor(mainFunction), false);
         if (!mainFunction.isVoid()) {
-            if (paramOrReturnWidth(mainFunction.returnType(), mainFunction.location()) == Width.LONG) {
+            if (paramOrReturnWidth(mainFunction.returnType()) == Width.LONG) {
                 mv.visitInsn(L2I);
             }
             mv.visitMethodInsn(INVOKESTATIC, "java/lang/System", "exit", "(I)V", false);
@@ -453,13 +491,129 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
     }
 
     private String methodDescriptor(Function f) {
-        StringBuilder sb = new StringBuilder("(");
+        List<net.loveruby.cflat.type.Type> paramTypes = new ArrayList<net.loveruby.cflat.type.Type>();
         for (CBCParameter p : f.parameters()) {
-            sb.append(paramOrReturnWidth(p.type(), p.location()).descriptor);
+            paramTypes.add(p.type());
+        }
+        return buildDescriptor(paramTypes, f.returnType());
+    }
+
+    private String signatureDescriptor(net.loveruby.cflat.type.FunctionType ft) {
+        return buildDescriptor(ft.paramTypes(), ft.returnType());
+    }
+
+    /** Builds a JVM method descriptor for a cflat signature. A struct/union
+     *  return type gets one extra trailing "J" parameter appended: see the
+     *  class doc for the hidden-pointer convention this backend uses to
+     *  pass/return them by value. */
+    private String buildDescriptor(List<net.loveruby.cflat.type.Type> paramTypes,
+            net.loveruby.cflat.type.Type returnType) {
+        StringBuilder sb = new StringBuilder("(");
+        for (net.loveruby.cflat.type.Type t : paramTypes) {
+            sb.append(paramOrReturnWidth(t).descriptor);
+        }
+        if (isAggregate(returnType)) {
+            sb.append("J");
         }
         sb.append(")");
-        sb.append(f.isVoid() ? "V" : paramOrReturnWidth(f.returnType(), f.location()).descriptor);
+        sb.append(returnType.isVoid() ? "V" : paramOrReturnWidth(returnType).descriptor);
         return sb.toString();
+    }
+
+    private boolean isAggregate(net.loveruby.cflat.type.Type t) {
+        return t.isStruct() || t.isUnion();
+    }
+
+    //
+    // Function pointers: id assignment and dispatch tables
+    //
+
+    private void assignFunctionIds(IR ir) {
+        for (DefinedFunction f : ir.definedFunctions()) {
+            if (f.type().getFunctionType().isVararg()) {
+                continue;  // never gets a body either (see compileFunction); can't be dispatched to
+            }
+            functionId.put(f, nextFunctionId++);
+            String desc = methodDescriptor(f);
+            List<DefinedFunction> group = functionsByDescriptor.get(desc);
+            if (group == null) {
+                group = new ArrayList<DefinedFunction>();
+                functionsByDescriptor.put(desc, group);
+            }
+            group.add(f);
+        }
+    }
+
+    private String dispatcherName(String funcDescriptor) {
+        return "$call$" + funcDescriptor;
+    }
+
+    /** Emits, for one distinct function descriptor, a
+     *  "(J<funcDescriptor's params>)<funcDescriptor's return>" method
+     *  that looks its long id argument up in a lookup-switch over every
+     *  matching function and jumps to a direct invokestatic -- the
+     *  closest the JVM has to "calling through a function pointer". */
+    private void emitDispatcher(String funcDescriptor, List<DefinedFunction> funcs) {
+        TreeMap<Long, DefinedFunction> byId = new TreeMap<Long, DefinedFunction>();
+        for (DefinedFunction f : funcs) {
+            byId.put(functionId.get(f), f);
+        }
+        String dispatcherDesc = "(J" + funcDescriptor.substring(1);
+        MethodVisitor mv = cw.visitMethod(ACC_PRIVATE | ACC_STATIC,
+                dispatcherName(funcDescriptor), dispatcherDesc, null, null);
+        mv.visitCode();
+
+        String params = funcDescriptor.substring(1, funcDescriptor.indexOf(')'));
+        List<Integer> argSlots = new ArrayList<Integer>();
+        List<Boolean> argWide = new ArrayList<Boolean>();
+        int slot = 2;  // the id (long) occupies slots 0-1
+        for (int i = 0; i < params.length(); i++) {
+            boolean wide = params.charAt(i) == 'J';
+            argSlots.add(slot);
+            argWide.add(wide);
+            slot += wide ? 2 : 1;
+        }
+        char retChar = funcDescriptor.charAt(funcDescriptor.length() - 1);
+
+        int n = byId.size();
+        int[] keys = new int[n];
+        org.objectweb.asm.Label[] labels = new org.objectweb.asm.Label[n];
+        List<DefinedFunction> ordered = new ArrayList<DefinedFunction>(byId.values());
+        int i = 0;
+        for (Long key : byId.keySet()) {
+            keys[i] = key.intValue();
+            labels[i] = new org.objectweb.asm.Label();
+            i++;
+        }
+        org.objectweb.asm.Label dflt = new org.objectweb.asm.Label();
+
+        mv.visitVarInsn(LLOAD, 0);
+        mv.visitInsn(L2I);
+        mv.visitLookupSwitchInsn(dflt, keys, labels);
+        for (int c = 0; c < n; c++) {
+            mv.visitLabel(labels[c]);
+            for (int a = 0; a < argSlots.size(); a++) {
+                mv.visitVarInsn(argWide.get(a) ? LLOAD : ILOAD, argSlots.get(a));
+            }
+            mv.visitMethodInsn(INVOKESTATIC, className, ordered.get(c).name(),
+                    funcDescriptor, false);
+            mv.visitInsn(retChar == 'V' ? RETURN : (retChar == 'J' ? LRETURN : IRETURN));
+        }
+        mv.visitLabel(dflt);
+        mv.visitTypeInsn(NEW, "java/lang/IllegalStateException");
+        mv.visitInsn(DUP);
+        mv.visitLdcInsn("invalid function pointer value");
+        mv.visitMethodInsn(INVOKESPECIAL, "java/lang/IllegalStateException", "<init>",
+                "(Ljava/lang/String;)V", false);
+        mv.visitInsn(ATHROW);
+        mv.visitMaxs(0, 0);
+        mv.visitEnd();
+    }
+
+    private void emitDispatchers() {
+        for (Map.Entry<String, List<DefinedFunction>> e : functionsByDescriptor.entrySet()) {
+            emitDispatcher(e.getKey(), e.getValue());
+        }
     }
 
     //
@@ -469,10 +623,11 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
     /** The JVM-level category (int or long) a value must have at a
      *  function boundary (parameter/return): the only two shapes an
      *  actual JVM method call can carry.  An array parameter decays to a
-     *  pointer per C rules; a struct/union can't be marshalled this way
-     *  at all and is rejected. This is distinct from asmWidthOf(), which
-     *  is the *true* C width (down to 1 byte) used for every memory
-     *  access once a value is safely inside $mem. */
+     *  pointer per C rules; a struct/union parameter/return is, per this
+     *  backend's hidden-pointer convention (see the class doc), also
+     *  just an address. This is distinct from asmWidthOf(), which is the
+     *  *true* C width (down to 1 byte) used for every memory access once
+     *  a value is safely inside $mem. */
     private enum Width {
         INT(1, "I"), LONG(2, "J");
 
@@ -485,15 +640,9 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         }
     }
 
-    private Width paramOrReturnWidth(net.loveruby.cflat.type.Type t, Location loc) {
-        if (t.isStruct() || t.isUnion()) {
-            errorHandler.error(loc,
-                    "passing/returning a struct or union by value is not supported "
-                            + "by the JVM backend (use a pointer): " + t);
-            return Width.INT;
-        }
-        if (t.isArray()) {
-            return Width.LONG;  // arrays decay to a pointer
+    private Width paramOrReturnWidth(net.loveruby.cflat.type.Type t) {
+        if (t.isArray() || isAggregate(t)) {
+            return Width.LONG;  // arrays decay to a pointer; struct/union are passed by address
         }
         return (t.size() == 8) ? Width.LONG : Width.INT;
     }
@@ -541,6 +690,14 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         if (e instanceof Uni && ((Uni) e).op() == Op.NOT) {
             return net.loveruby.cflat.asm.Type.INT32;
         }
+        if (e instanceof Var && e.type() == null) {
+            // A Var whose entity is a struct/union or a bare function
+            // name has no scalar asm.Type of its own (IRGenerator's
+            // varType() returns null for non-scalar types), but its
+            // compiled *value* here is always a long: an address for a
+            // struct/union, a function-pointer id for a function.
+            return net.loveruby.cflat.asm.Type.INT64;
+        }
         return e.type();
     }
 
@@ -552,6 +709,11 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         private final MethodVisitor mv;
         private final DefinedFunction func;
         private final Map<Entity, Long> frameOffset = new HashMap<Entity, Long>();
+        /** A struct/union parameter's frame "slot" is the incoming
+         *  pointer itself (already the address of a fresh, caller-made
+         *  copy -- see the class doc), not a spilled-to-memory copy of
+         *  it, so its address is just this JVM local, loaded directly. */
+        private final Map<Entity, Integer> indirectSlot = new HashMap<Entity, Integer>();
         private final Map<net.loveruby.cflat.asm.Label, org.objectweb.asm.Label> labels =
                 new HashMap<net.loveruby.cflat.asm.Label, org.objectweb.asm.Label>();
         private final List<Integer> paramJvmSlots = new ArrayList<Integer>();
@@ -561,6 +723,14 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         private final int returnValueSlot;
         private final int switchScratchInt;
         private final int switchScratchLong;
+        /** Scratch slots used to marshal a struct/union byte-for-byte copy
+         *  (a by-value argument, a whole-value assignment, a struct/union
+         *  return): the destination and source addresses are stashed here
+         *  because System.arraycopy() needs [destAddr, srcAddr] in the
+         *  opposite order from how convenient it is to *compute* them. */
+        private final int copyDestScratch;
+        private final int copySrcScratch;
+        private final int hiddenOutputSlot;
         private final org.objectweb.asm.Label epilogueLabel = new org.objectweb.asm.Label();
         private Location currentLocation;
 
@@ -572,16 +742,32 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
 
             int jvmSlot = 0;
             for (CBCParameter p : func.parameters()) {
-                Width w = paramOrReturnWidth(p.type(), p.location());
+                Width w = paramOrReturnWidth(p.type());
                 paramJvmSlots.add(jvmSlot);
                 paramWidths.add(w);
                 jvmSlot += w.slots;
             }
+            if (isAggregate(func.returnType())) {
+                // Hidden trailing hand-off parameter: where to write the
+                // struct/union result (see the class doc).
+                hiddenOutputSlot = jvmSlot;
+                jvmSlot += 2;
+            }
+            else {
+                hiddenOutputSlot = -1;
+            }
 
             long off = 0;
-            for (CBCParameter p : func.parameters()) {
-                frameOffset.put(p, off);
-                off += slotSize(p);
+            List<CBCParameter> params = func.parameters();
+            for (int i = 0; i < params.size(); i++) {
+                CBCParameter p = params.get(i);
+                if (isAggregate(p.type())) {
+                    indirectSlot.put(p, paramJvmSlots.get(i));
+                }
+                else {
+                    frameOffset.put(p, off);
+                    off += slotSize(p);
+                }
             }
             // func.lvarScope() is the function body's own scope; walking
             // it recursively (rather than flattening it with
@@ -596,6 +782,10 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             jvmSlot += 2;
             switchScratchInt = jvmSlot++;
             switchScratchLong = jvmSlot;
+            jvmSlot += 2;
+            copyDestScratch = jvmSlot;
+            jvmSlot += 2;
+            copySrcScratch = jvmSlot;
         }
 
         /** Recursively lays out one block scope's own variables starting
@@ -625,6 +815,9 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             this.returnValueSlot = -1;
             this.switchScratchInt = -1;
             this.switchScratchLong = -1;
+            this.copyDestScratch = -1;
+            this.copySrcScratch = -1;
+            this.hiddenOutputSlot = -1;
         }
 
         void run() {
@@ -648,6 +841,13 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             List<CBCParameter> params = func.parameters();
             for (int i = 0; i < params.size(); i++) {
                 CBCParameter p = params.get(i);
+                if (isAggregate(p.type())) {
+                    // Its "frame slot" (indirectSlot) already holds the
+                    // caller-supplied address directly (see the class
+                    // doc's hidden-pointer convention); there is no
+                    // simulated-memory copy of its own to spill into.
+                    continue;
+                }
                 pushBuf();
                 pushAddressOf(p);
                 mv.visitInsn(L2I);
@@ -746,9 +946,23 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             mv.visitFieldInsn(GETSTATIC, className, BUF_FIELD, BUF_DESC);
         }
 
-        /** Pushes the (long) address of a variable: a compile-time
-         *  constant for a global, frameBase-relative for a local/param. */
+        /** Pushes the (long) "address" of an entity: a compile-time
+         *  constant for a global, frameBase-relative for a local/param,
+         *  the incoming JVM slot itself for a struct/union parameter
+         *  (see the class doc), or -- when e is a function -- its
+         *  compile-time-assigned function-pointer id (the closest thing
+         *  to an "address" a function has on the JVM; see the class doc's
+         *  function-pointer section). */
         private void pushAddressOf(Entity e) {
+            if (e instanceof Function) {
+                pushFunctionId((Function) e);
+                return;
+            }
+            Integer indirect = indirectSlot.get(e);
+            if (indirect != null) {
+                mv.visitVarInsn(LLOAD, indirect);
+                return;
+            }
             Long staticOff = globalAddr.get(e);
             if (staticOff != null) {
                 mv.visitLdcInsn(staticOff);
@@ -763,6 +977,43 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             }
             error("address of an unsupported/external variable: " + e.name());
             mv.visitInsn(LCONST_0);
+        }
+
+        /** Pushes a defined, non-vararg function's id as a long -- used
+         *  both for &f and for a bare function name decaying to a value
+         *  (e.g. "fp = f;"), which are the same value on this backend. */
+        private void pushFunctionId(Function f) {
+            if (!(f instanceof DefinedFunction) || f.type().getFunctionType().isVararg()) {
+                error("cannot take the address of this function on the JVM backend: "
+                        + f.name() + "()");
+                mv.visitInsn(LCONST_0);
+                return;
+            }
+            Long id = functionId.get((DefinedFunction) f);
+            if (id == null) {
+                error("internal error: no id assigned to function " + f.name() + "()");
+                mv.visitInsn(LCONST_0);
+                return;
+            }
+            mv.visitLdcInsn(id);
+        }
+
+        /** Copies `size` bytes of $mem from the address in copySrcScratch
+         *  to the address in copyDestScratch -- callers must store both
+         *  there first. This is the whole of what a struct/union "value"
+         *  (a by-value argument, a whole-value assignment, or a
+         *  struct/union return) actually is at this backend's level: a
+         *  raw memcpy, exactly like C's own struct assignment semantics. */
+        private void emitArraycopy(long size) {
+            mv.visitFieldInsn(GETSTATIC, className, MEM_FIELD, "[B");
+            mv.visitVarInsn(LLOAD, copySrcScratch);
+            mv.visitInsn(L2I);
+            mv.visitFieldInsn(GETSTATIC, className, MEM_FIELD, "[B");
+            mv.visitVarInsn(LLOAD, copyDestScratch);
+            mv.visitInsn(L2I);
+            mv.visitLdcInsn((int) size);
+            mv.visitMethodInsn(INVOKESTATIC, "java/lang/System", "arraycopy",
+                    "(Ljava/lang/Object;ILjava/lang/Object;II)V", false);
         }
 
         /** Assumes [buf, index] are already on the stack; leaves the
@@ -827,14 +1078,60 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             return null;
         }
 
-        private boolean isNonScalarVar(Expr e) {
-            return (e instanceof Var) && !((Var) e).entity().type().isScalar();
+        /** True for a Var naming a struct/union entity directly (as
+         *  opposed to a bare function name, which is also a non-scalar
+         *  Var -- see resultWidth()'s doc comment -- but behaves like an
+         *  ordinary long value, not a byte blob to copy). */
+        private boolean isAggregateVar(Expr e) {
+            return (e instanceof Var)
+                    && !(((Var) e).entity() instanceof Function)
+                    && !((Var) e).entity().type().isScalar();
+        }
+
+        /** True for a call whose result is a struct/union, whether a
+         *  direct call or one made through a function pointer. */
+        private boolean callReturnsAggregate(Call c) {
+            if (c.isStaticCall()) {
+                return isAggregate(c.function().returnType());
+            }
+            net.loveruby.cflat.type.FunctionType ft = indirectCallSignature(c);
+            return ft != null && isAggregate(ft.returnType());
+        }
+
+        /** Resolves the FunctionType being called through, for a call
+         *  through a plain function-pointer variable (the only shape of
+         *  indirect call this backend supports -- see compileIndirectCall).
+         *  Returns null for anything else (a computed/complex function-
+         *  pointer expression), so callers can reject it cleanly. */
+        private net.loveruby.cflat.type.FunctionType indirectCallSignature(Call c) {
+            if (!(c.expr() instanceof Var)) {
+                return null;
+            }
+            net.loveruby.cflat.type.Type t = ((Var) c.expr()).entity().type();
+            if (!t.isPointer() || !t.baseType().isFunction()) {
+                return null;
+            }
+            return t.baseType().getFunctionType();
         }
 
         public Void visit(Assign node) {
-            if (isNonScalarVar(node.rhs())) {
-                error("whole struct/union assignment is not supported by the JVM backend; "
-                        + "copy members individually or use a pointer");
+            if (node.rhs() instanceof Call && callReturnsAggregate((Call) node.rhs())) {
+                // "s = f();": have f() write its result straight into s
+                // rather than into scratch space and copying it over.
+                compileCallInto((Call) node.rhs(), node.lhs());
+                popValue(net.loveruby.cflat.asm.Type.INT64);
+                return null;
+            }
+            if (isAggregateVar(node.rhs())) {
+                // Whole-value struct/union assignment ("s1 = s2;") is
+                // just a raw memcpy at this backend's level -- see
+                // emitArraycopy's doc comment.
+                Entity src = ((Var) node.rhs()).entity();
+                compile(node.lhs());
+                mv.visitVarInsn(LSTORE, copyDestScratch);
+                pushAddressOf(src);
+                mv.visitVarInsn(LSTORE, copySrcScratch);
+                emitArraycopy(src.type().size());
                 return null;
             }
             pushBuf();
@@ -912,11 +1209,37 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
 
         public Void visit(Return node) {
             if (node.expr() != null) {
-                compile(node.expr());
-                mv.visitVarInsn(isWide(resultWidth(node.expr())) ? LSTORE : ISTORE, returnValueSlot);
+                if (isAggregate(func.returnType())) {
+                    emitAggregateReturn(node.expr());
+                }
+                else {
+                    compile(node.expr());
+                    mv.visitVarInsn(isWide(resultWidth(node.expr())) ? LSTORE : ISTORE, returnValueSlot);
+                }
             }
             mv.visitJumpInsn(GOTO, epilogueLabel);
             return null;
+        }
+
+        /** Copies a returned struct/union's bytes into the hidden output
+         *  address the caller supplied (see the class doc), then "returns"
+         *  that same address as this function's own JVM return value. */
+        private void emitAggregateReturn(Expr expr) {
+            if (!isAggregateVar(expr)) {
+                error("this struct/union return expression is too complex for the "
+                        + "JVM backend; return a plain variable instead");
+                mv.visitVarInsn(LLOAD, hiddenOutputSlot);
+                mv.visitVarInsn(LSTORE, returnValueSlot);
+                return;
+            }
+            Entity src = ((Var) expr).entity();
+            mv.visitVarInsn(LLOAD, hiddenOutputSlot);
+            mv.visitVarInsn(LSTORE, copyDestScratch);
+            pushAddressOf(src);
+            mv.visitVarInsn(LSTORE, copySrcScratch);
+            emitArraycopy(func.returnType().size());
+            mv.visitVarInsn(LLOAD, hiddenOutputSlot);
+            mv.visitVarInsn(LSTORE, returnValueSlot);
         }
 
         //
@@ -1186,24 +1509,35 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         }
 
         public Void visit(Call node) {
-            compileCall(node);
+            compileCallInto(node, null);
             return null;
         }
 
         private boolean callIsVoid(Call call) {
-            if (!call.isStaticCall()) return false;
-            // putchar/puts/printf are all declared to return int in
-            // stdio.hb, so the generic f.isVoid() check below already
-            // says "not void" for them; compilePutchar/compilePuts/
-            // compilePrintf always leave a (possibly dummy) int on the
-            // stack to match.
-            return call.function().isVoid();
+            if (call.isStaticCall()) {
+                // putchar/puts/printf are all declared to return int in
+                // stdio.hb, so the generic isVoid() check below already
+                // says "not void" for them; compilePutchar/compilePuts/
+                // compilePrintf always leave a (possibly dummy) int on
+                // the stack to match.
+                return call.function().isVoid();
+            }
+            net.loveruby.cflat.type.FunctionType ft = indirectCallSignature(call);
+            return ft != null && ft.returnType().isVoid();
         }
 
-        private void compileCall(Call node) {
+        /** Compiles a call, either leaving its result on the stack (per
+         *  the descriptor: an int/long, or nothing for void) when
+         *  destAddrExpr is null, or -- when the call returns a struct/
+         *  union and destAddrExpr is given -- writing the result directly
+         *  into destAddrExpr's address instead of a fresh scratch buffer
+         *  (used by visit(Assign) for "s = f();", to skip a redundant
+         *  copy); the JVM return value is still left on the stack either
+         *  way (see the class doc: a struct/union-returning function
+         *  "returns" its hidden output address for convenience). */
+        private void compileCallInto(Call node, Expr destAddrExpr) {
             if (!node.isStaticCall()) {
-                error("indirect (function pointer) calls are not supported by the JVM backend");
-                pushDummy(node.type());
+                compileIndirectCall(node, destAddrExpr);
                 return;
             }
             Function f = node.function();
@@ -1230,10 +1564,92 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             }
             DefinedFunction df = (DefinedFunction) f;
             for (Expr arg : node.args()) {
-                compile(arg);
+                compileArg(arg);
+            }
+            if (isAggregate(df.returnType())) {
+                pushAggregateDest(destAddrExpr, df.returnType().size());
             }
             mv.visitMethodInsn(INVOKESTATIC, className, df.name(),
                     methodDescriptor(df), false);
+        }
+
+        /** Calling through a function pointer: the JVM has no notion of a
+         *  raw callable address, so this dispatches through a generated
+         *  lookup-switch method (one per distinct signature -- see
+         *  emitDispatcher) that maps the id back to a real invokestatic.
+         *  Only a plain function-pointer variable is supported as the
+         *  callee expression (see indirectCallSignature's doc comment). */
+        private void compileIndirectCall(Call node, Expr destAddrExpr) {
+            net.loveruby.cflat.type.FunctionType ft = indirectCallSignature(node);
+            if (ft == null) {
+                error("this indirect call is too complex for the JVM backend "
+                        + "(only calling through a plain function-pointer variable "
+                        + "is supported)");
+                pushDummy(node.type());
+                return;
+            }
+            if (ft.isVararg()) {
+                error("variadic function pointer calls are not supported by the JVM backend");
+                pushDummy(node.type());
+                return;
+            }
+            String desc = signatureDescriptor(ft);
+            if (!functionsByDescriptor.containsKey(desc)) {
+                error("no function defined in this file matches this function "
+                        + "pointer's signature; it can never hold a callable value");
+                pushDummy(node.type());
+                return;
+            }
+            // The dispatcher's own descriptor is "(J" + <ft's params...>,
+            // i.e. the id comes *first* -- unlike the hidden hand-off
+            // parameter for a direct aggregate-returning call (which is
+            // appended *last*; see buildDescriptor) -- so it must be
+            // pushed before the real arguments, not after.
+            compile(node.expr());
+            for (Expr arg : node.args()) {
+                compileArg(arg);
+            }
+            if (isAggregate(ft.returnType())) {
+                pushAggregateDest(destAddrExpr, ft.returnType().size());
+            }
+            mv.visitMethodInsn(INVOKESTATIC, className, dispatcherName(desc),
+                    "(J" + desc.substring(1), false);
+        }
+
+        /** Compiles one call argument, copying a struct/union-valued one
+         *  into a fresh scratch buffer first and passing *that* address
+         *  (proper C by-value semantics: the callee must not be able to
+         *  observe changes back in the caller's own copy). */
+        private void compileArg(Expr arg) {
+            if (!isAggregateVar(arg)) {
+                compile(arg);
+                return;
+            }
+            Entity src = ((Var) arg).entity();
+            long size = src.type().size();
+            mv.visitLdcInsn(size);
+            mv.visitMethodInsn(INVOKESTATIC, className, ALLOC_METHOD, "(J)J", false);
+            mv.visitVarInsn(LSTORE, copyDestScratch);
+            pushAddressOf(src);
+            mv.visitVarInsn(LSTORE, copySrcScratch);
+            emitArraycopy(size);
+            mv.visitVarInsn(LLOAD, copyDestScratch);
+        }
+
+        /** Pushes the hidden trailing destination address a struct/union-
+         *  returning call needs (see the class doc): destAddrExpr's own
+         *  address when the caller has a specific target in mind (e.g.
+         *  "s = f();"), or a fresh scratch buffer otherwise (e.g. the
+         *  result is only going to be read from immediately, or is
+         *  discarded outright). */
+        private void pushAggregateDest(Expr destAddrExpr, long size) {
+            if (destAddrExpr != null) {
+                compile(destAddrExpr);
+            }
+            else {
+                mv.visitLdcInsn(size);
+                mv.visitMethodInsn(INVOKESTATIC, className, ALLOC_METHOD, "(J)J", false);
+            }
         }
 
         private void loadSystemOut() {
@@ -1414,10 +1830,17 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
 
         public Void visit(Var node) {
             Entity e = node.entity();
+            if (e instanceof Function) {
+                // A bare function name used as a value (e.g. "fp = f;",
+                // decaying like an array does) is the same value as
+                // "&f" on this backend -- see pushAddressOf's doc comment.
+                pushAddressOf(e);
+                return null;
+            }
             if (!e.type().isScalar()) {
-                error("cannot use a struct/union/array value directly (as an argument, "
-                        + "in an expression, etc.) by the JVM backend; use a pointer instead: "
-                        + e.name());
+                error("cannot use a struct/union/array value directly here on the JVM "
+                        + "backend (as a plain expression outside a supported by-value "
+                        + "position); use a pointer instead: " + e.name());
                 mv.visitInsn(LCONST_0);
                 return null;
             }

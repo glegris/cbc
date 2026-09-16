@@ -576,16 +576,20 @@ class TypeChecker extends Visitor {
     // #@@}
 
     private boolean isInvalidStatementType(Type t) {
-        return t.isStruct() || t.isUnion();
+        // struct/union used to be rejected here, but passing/returning
+        // them by value is now supported (JVM backend only -- see
+        // sysdep/jvm/CodeGenerator.java; the x86 backend rejects it at
+        // code generation time instead, since it doesn't implement that
+        // ABI).
+        return false;
     }
 
     private boolean isInvalidReturnType(Type t) {
-        return t.isStruct() || t.isUnion() || t.isArray();
+        return t.isArray();
     }
 
     private boolean isInvalidParameterType(Type t) {
-        return t.isStruct() || t.isUnion() || t.isVoid()
-                || t.isIncompleteArray();
+        return t.isVoid() || t.isIncompleteArray();
     }
 
     private boolean isInvalidVariableType(Type t) {
@@ -594,11 +598,13 @@ class TypeChecker extends Visitor {
 
     private boolean isInvalidLHSType(Type t) {
         // Array is OK if it is declared as a type of parameter.
-        return t.isStruct() || t.isUnion() || t.isVoid() || t.isArray();
+        // struct/union are now a valid (whole-value) assignment target;
+        // see the isInvalidStatementType comment above.
+        return t.isVoid() || t.isArray();
     }
 
     private boolean isInvalidRHSType(Type t) {
-        return t.isStruct() || t.isUnion() || t.isVoid();
+        return t.isVoid();
     }
 
     private boolean mustBeInteger(ExprNode expr, String op) {

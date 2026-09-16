@@ -103,18 +103,31 @@ C-style address space:
   * `main(void)` and `main(int argc, char **argv)`; `argc`/`argv` are
     derived from the JVM's own `String[] args` (with a synthetic
     `argv[0]` standing in for the program name).
+  * **struct/union by value**: passing one as a parameter, returning one,
+    and assigning one struct/union to another as a whole (`s1 = s2;`) all
+    work, through a hidden-pointer calling convention (see the class
+    comment on `sysdep/jvm/CodeGenerator.java` for the details) -- only
+    the x86 backend still requires copying members individually or using
+    pointers, since it doesn't implement that convention and rejects
+    these at code generation time instead. This only covers a *named*
+    struct/union variable, though: a struct/union produced by a more
+    complex expression (e.g. `*p`) still needs to be assigned to a plain
+    variable first.
+  * **function pointers**: taking one's address (`&f`, or a bare function
+    name decaying to a value, e.g. `fp = f;`) and calling through one
+    both work, for any non-variadic function defined in the same source
+    file -- including one returning a struct/union by value. Only
+    calling through a plain function-pointer variable is supported, not
+    a more complex expression (an array element, a struct member, ...).
 
-Remaining gaps: passing or returning a struct/union *by value* (as
-opposed to through a pointer) isn't supported, nor is assigning one
-struct/union to another as a whole -- copy members individually, or use
-pointers. Function pointers aren't supported at all (neither `&f` nor
-calling through one). Calling a function that isn't defined in the same
-source file is rejected too, except for three libc intrinsics translated
-to real JVM calls so printf-based programs work: `putchar(int)`,
-`puts(char*)` and `printf(char*, ...)` -- the format string itself must
-still be a compile-time literal, but `puts`/`%s` now accept any `char*`
-expression, not just literals. Lastly, `long` and every pointer type are
-real 8-byte JVM `long`s here (see the class comment on
+Remaining gaps: calling a function that isn't defined in the same source
+file is rejected, except for three libc intrinsics translated to real JVM
+calls so printf-based programs work: `putchar(int)`, `puts(char*)` and
+`printf(char*, ...)` -- the format string itself must still be a
+compile-time literal, but `puts`/`%s` now accept any `char*` expression,
+not just literals. These three intrinsics have no real address either,
+so `&putchar` and friends are rejected too. Lastly, `long` and every
+pointer type are real 8-byte JVM `long`s here (see the class comment on
 `sysdep/jvm/CodeGenerator.java`), so `sizeof(long)`/`sizeof(T*)` are 8,
 not 4 like on the (32-bit-only) x86 backend.
 
