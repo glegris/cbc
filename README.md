@@ -381,6 +381,18 @@ pointer type are real 8-byte JVM `long`s here (see the class comment on
 `sysdep/jvm/CodeGenerator.java`), so `sizeof(long)`/`sizeof(T*)` are 8,
 not 4 like on the (32-bit-only) x86 backend.
 
+One structural limit: a cflat function compiles to exactly one JVM
+method, with no splitting, and a JVM method's bytecode is capped at
+65535 bytes by the class file format itself (a 16-bit `code_length`,
+not an ASM restriction -- no JVM will load past it regardless of
+toolchain). Very large generated code -- e.g. a single function with
+many thousands of statements -- can hit that ceiling; there's no
+trampoline that splits a too-large function across several JVM methods,
+so this is reported as a clean compile error (naming the method and its
+actual bytecode size) rather than silently miscompiling or crashing
+with a raw ASM stack trace. The fix is splitting the offending cflat
+function itself into smaller ones.
+
 Original descrition
 ====================
 

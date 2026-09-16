@@ -5,7 +5,9 @@ import net.loveruby.cflat.entity.*;
 import net.loveruby.cflat.ast.Location;
 import net.loveruby.cflat.utils.ErrorHandler;
 import net.loveruby.cflat.utils.NameUtils;
+import org.objectweb.asm.ClassTooLargeException;
 import org.objectweb.asm.ClassWriter;
+import org.objectweb.asm.MethodTooLargeException;
 import org.objectweb.asm.MethodVisitor;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
@@ -152,7 +154,33 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             // anything with the returned bytes, so this is never written.
             return new JVMAssemblyCode(className, new byte[0]);
         }
-        return new JVMAssemblyCode(className, cw.toByteArray());
+        try {
+            return new JVMAssemblyCode(className, cw.toByteArray());
+        }
+        catch (MethodTooLargeException ex) {
+            // The JVM class file format's own limit -- a method's Code
+            // attribute has a 16-bit code_length, so 65535 bytes of
+            // bytecode is a hard ceiling no JVM will load past, not just
+            // an ASM restriction. There's no way to raise it; only a fix
+            // (splitting the compiled function into several JVM methods)
+            // could lift it, which this backend doesn't implement. This
+            // is one straight-line cflat function compiling to one JVM
+            // method with no split, so the fix on the cflat side is
+            // splitting the source function itself into smaller ones.
+            errorHandler.error(ex.getClassName() + "." + ex.getMethodName()
+                    + ": compiled method is too large for the JVM backend ("
+                    + ex.getCodeSize() + " bytes of bytecode, the JVM's own "
+                    + "limit is 65535) -- split this cflat function into "
+                    + "smaller ones");
+            return new JVMAssemblyCode(className, new byte[0]);
+        }
+        catch (ClassTooLargeException ex) {
+            errorHandler.error(ex.getClassName() + ": compiled class is too "
+                    + "large for the JVM backend (" + ex.getConstantPoolCount()
+                    + " constant pool entries, the JVM's own limit is 65535) "
+                    + "-- split this source file into smaller ones");
+            return new JVMAssemblyCode(className, new byte[0]);
+        }
     }
 
     //
