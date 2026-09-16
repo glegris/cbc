@@ -100,10 +100,16 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
     // See compileNativeCall()/nativeLibrarySource() and the class docs on
     // NativeLibrary (generated) and StandardLibrary (hand-written, in
     // net.loveruby.cflat.sysdep.jvm.runtime) for the extensible-library
-    // mechanism these support.
+    // mechanism these support. LIB_FIELD holds the one StandardLibrary
+    // instance (constructed once in emitClinit) that every call to a
+    // name already implemented there goes through -- see
+    // compilePutchar/compilePuts/emitPrint*/compileNativeCall.
     private static final String NATIVE_LIBRARY_CLASS = "NativeLibrary";
     private static final String STANDARD_LIBRARY_CLASS =
             "net/loveruby/cflat/sysdep/jvm/runtime/StandardLibrary";
+    private static final String STANDARD_LIBRARY_DESC =
+            "L" + STANDARD_LIBRARY_CLASS + ";";
+    private static final String LIB_FIELD = "$lib";
 
     /** Names already implemented in StandardLibrary.java (excluding
      *  putchar/puts/the printf primitives, which are compile-time
@@ -170,6 +176,8 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         cw.visitField(ACC_PRIVATE | ACC_STATIC, BUF_FIELD, BUF_DESC, null, null).visitEnd();
         cw.visitField(ACC_PRIVATE | ACC_STATIC, SP_FIELD, "J", null, null).visitEnd();
         cw.visitField(ACC_PRIVATE | ACC_STATIC, HP_FIELD, "J", null, null).visitEnd();
+        cw.visitField(ACC_PRIVATE | ACC_STATIC, LIB_FIELD, STANDARD_LIBRARY_DESC, null, null)
+                .visitEnd();
 
         emitAllocHelper();
         emitStrHelper();
@@ -292,6 +300,16 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         mv.visitMethodInsn(INVOKEVIRTUAL, BUF_CLASS, "order",
                 "(Ljava/nio/ByteOrder;)" + BUF_DESC, false);
         mv.visitFieldInsn(PUTSTATIC, className, BUF_FIELD, BUF_DESC);
+
+        // The one shared StandardLibrary instance every putchar/puts/
+        // printf and extensible-native-library call goes through (see
+        // compilePutchar/compilePuts/emitPrint*/compileNativeCall) --
+        // constructed here, once, over this same $mem.
+        mv.visitTypeInsn(NEW, STANDARD_LIBRARY_CLASS);
+        mv.visitInsn(DUP);
+        mv.visitFieldInsn(GETSTATIC, className, MEM_FIELD, "[B");
+        mv.visitMethodInsn(INVOKESPECIAL, STANDARD_LIBRARY_CLASS, "<init>", "([B)V", false);
+        mv.visitFieldInsn(PUTSTATIC, className, LIB_FIELD, STANDARD_LIBRARY_DESC);
 
         for (ConstantEntry ent : stringLiteralsInOrder) {
             emitStaticBytesInit(mv, stringAddr.get(ent), encodeCString(ent.value()));
@@ -622,13 +640,16 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         sb.append("// StandardLibrary is inherited automatically and has no stub here;\n");
         sb.append("// re-running cbc never overwrites this file once it exists (see\n");
         sb.append("// Compiler#writeNativeLibrarySource), so edits are always safe.\n");
-        sb.append("// \"mem\" is this program's whole simulated address space (every cflat\n");
-        sb.append("// pointer is a byte offset into it); ignore it if your implementation\n");
-        sb.append("// doesn't need to read/write memory directly.\n");
+        sb.append("// \"mem\" (inherited from StandardLibrary) is this program's whole\n");
+        sb.append("// simulated address space, if your implementation needs to read/write\n");
+        sb.append("// memory directly -- every cflat pointer is a byte offset into it.\n");
         sb.append("import net.loveruby.cflat.sysdep.jvm.runtime.NotImplementedException;\n");
         sb.append("import net.loveruby.cflat.sysdep.jvm.runtime.StandardLibrary;\n\n");
         sb.append("public class ").append(NATIVE_LIBRARY_CLASS)
                 .append(" extends StandardLibrary {\n");
+        sb.append("    public ").append(NATIVE_LIBRARY_CLASS).append("(byte[] mem) {\n");
+        sb.append("        super(mem);\n");
+        sb.append("    }\n\n");
         for (Map.Entry<String, String> stub : nativeStubsNeeded.entrySet()) {
             sb.append(nativeStubMethodSource(stub.getKey(), stub.getValue()));
         }
@@ -636,27 +657,14 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         return sb.toString();
     }
 
-    /** Inserts "[B" (the descriptor for $mem, this program's simulated
-     *  address space) right after the opening "(" of a JVM method
-     *  descriptor -- see compileNativeCall()'s doc comment for why
-     *  every native/standard-library call gets it as an implicit
-     *  leading parameter. */
-    private String withLeadingMem(String descriptor) {
-        return "([B" + descriptor.substring(1);
-    }
-
     private String nativeStubMethodSource(String name, String descriptor) {
-        // descriptor always starts with the "[B" withLeadingMem() added;
-        // strip it back off here since it's rendered specially below (as
-        // "byte[] mem"), not as a numbered "aN" cflat-level parameter.
-        String cflatDescriptor = "(" + descriptor.substring(3);
         List<String> paramTypes = new ArrayList<String>();
-        String returnType = descriptorToJavaSource(cflatDescriptor, paramTypes);
+        String returnType = descriptorToJavaSource(descriptor, paramTypes);
         StringBuilder sb = new StringBuilder();
-        sb.append("    public static ").append(returnType).append(' ')
-                .append(name).append("(byte[] mem");
+        sb.append("    public ").append(returnType).append(' ').append(name).append('(');
         for (int i = 0; i < paramTypes.size(); i++) {
-            sb.append(", ").append(paramTypes.get(i)).append(" a").append(i);
+            if (i > 0) sb.append(", ");
+            sb.append(paramTypes.get(i)).append(" a").append(i);
         }
         sb.append(") {\n");
         sb.append("        throw new NotImplementedException(\"").append(name).append("\");\n");
@@ -2005,43 +2013,42 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
 
         /** Any external function other than the three compile-time
          *  intrinsics above: a name already implemented in
-         *  StandardLibrary is called there directly; anything else is
-         *  dispatched to NativeLibrary, a small Java source file
-         *  generated alongside the .class (see
+         *  StandardLibrary is called on the one shared instance (see
+         *  pushLib()); anything else is dispatched to NativeLibrary, a
+         *  small Java source file generated alongside the .class (see
          *  CodeGenerator#nativeLibrarySource()) with one stub per such
          *  function, extending StandardLibrary -- a name not yet
          *  implemented in either throws NotImplementedException at
          *  runtime (compiling and running the rest of the program still
-         *  works, as long as this particular call is never reached). */
+         *  works, as long as this particular call is never reached).
+         *  Unlike a StandardLibrary call, a NativeLibrary one constructs
+         *  a fresh instance right here rather than sharing one cached in
+         *  a field: whether NativeLibrary even exists (a class is only
+         *  generated when at least one name needs a stub) isn't known
+         *  until every function has been compiled, so emitClinit -- run
+         *  well before that -- can't construct a shared instance of it
+         *  the way it does for StandardLibrary. */
         private void compileNativeCall(Call node, UndefinedFunction f, Expr destAddrExpr) {
             String name = f.name();
             boolean inStandardLibrary = STANDARD_LIBRARY_FUNCTIONS.contains(name);
-            // Every native/standard-library function gets $mem (this
-            // program's whole simulated address space) as an implicit
-            // leading parameter, invisible in the cflat-level extern
-            // declaration -- so a real implementation (strlen, strcpy,
-            // ...) can read/write memory at the addresses it's given,
-            // and a stub not needing that (abs, toupper, ...) just
-            // ignores it. One uniform rule needing no per-function
-            // metadata beats deciding case by case which functions
-            // need it.
-            String desc = withLeadingMem(methodDescriptor(f));
-            if (!inStandardLibrary) {
-                nativeStubsNeeded.put(name, desc);
+            String desc = methodDescriptor(f);
+            if (inStandardLibrary) {
+                pushLib();
             }
-            mv.visitFieldInsn(GETSTATIC, className, MEM_FIELD, "[B");
+            else {
+                nativeStubsNeeded.put(name, desc);
+                mv.visitTypeInsn(NEW, NATIVE_LIBRARY_CLASS);
+                mv.visitInsn(DUP);
+                mv.visitFieldInsn(GETSTATIC, className, MEM_FIELD, "[B");
+                mv.visitMethodInsn(INVOKESPECIAL, NATIVE_LIBRARY_CLASS, "<init>", "([B)V", false);
+            }
             for (Expr arg : node.args()) {
                 compileArg(arg);
             }
             if (isAggregate(f.returnType())) {
                 pushAggregateDest(destAddrExpr, f.returnType().size());
             }
-            // A NativeLibrary.java is only ever generated (and so, only
-            // ever exists) when nativeStubsNeeded ends up non-empty; a
-            // name already in StandardLibrary must therefore be called
-            // there directly rather than through NativeLibrary, which
-            // might not exist at all for this program.
-            mv.visitMethodInsn(INVOKESTATIC,
+            mv.visitMethodInsn(INVOKEVIRTUAL,
                     inStandardLibrary ? STANDARD_LIBRARY_CLASS : NATIVE_LIBRARY_CLASS,
                     name, desc, false);
         }
@@ -2136,17 +2143,26 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                     "(J)Ljava/lang/String;", false);
         }
 
+        /** Pushes the shared StandardLibrary instance (see emitClinit) as
+         *  the receiver for one of the INVOKEVIRTUAL calls below --
+         *  always the first thing pushed, before any argument. */
+        private void pushLib() {
+            mv.visitFieldInsn(GETSTATIC, className, LIB_FIELD, STANDARD_LIBRARY_DESC);
+        }
+
         private void compilePutchar(Call node) {
+            pushLib();
             Expr arg = node.args().get(0);
             compile(arg);
             coerceToInt(resultWidth(arg));
-            mv.visitMethodInsn(INVOKESTATIC, STANDARD_LIBRARY_CLASS,
+            mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_LIBRARY_CLASS,
                     "putchar", "(I)I", false);
         }
 
         private void compilePuts(Call node) {
+            pushLib();
             compileCString(node.args().get(0));
-            mv.visitMethodInsn(INVOKESTATIC, STANDARD_LIBRARY_CLASS,
+            mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_LIBRARY_CLASS,
                     "puts", "(Ljava/lang/String;)I", false);
         }
 
@@ -2213,8 +2229,9 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
 
         private void flushLiteral(StringBuilder sb) {
             if (sb.length() > 0) {
+                pushLib();
                 mv.visitLdcInsn(sb.toString());
-                mv.visitMethodInsn(INVOKESTATIC, STANDARD_LIBRARY_CLASS,
+                mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_LIBRARY_CLASS,
                         "printLiteral", "(Ljava/lang/String;)V", false);
                 sb.setLength(0);
             }
@@ -2225,13 +2242,14 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                 error("not enough arguments for printf format");
                 return idx;
             }
+            pushLib();
             Expr arg = args.get(idx);
             compile(arg);
             boolean wide = isWide(resultWidth(arg));
             String name = unsigned
                     ? (wide ? "printUnsignedLong" : "printUnsignedInt")
                     : (wide ? "printLong" : "printInt");
-            mv.visitMethodInsn(INVOKESTATIC, STANDARD_LIBRARY_CLASS, name,
+            mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_LIBRARY_CLASS, name,
                     wide ? "(J)V" : "(I)V", false);
             return idx + 1;
         }
@@ -2241,11 +2259,12 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                 error("not enough arguments for printf format");
                 return idx;
             }
+            pushLib();
             Expr arg = args.get(idx);
             compile(arg);
             coerceToInt(resultWidth(arg));
             mv.visitInsn(I2C);
-            mv.visitMethodInsn(INVOKESTATIC, STANDARD_LIBRARY_CLASS,
+            mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_LIBRARY_CLASS,
                     "printChar", "(C)V", false);
             return idx + 1;
         }
@@ -2255,8 +2274,9 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                 error("not enough arguments for printf format");
                 return idx;
             }
+            pushLib();
             compileCString(args.get(idx));
-            mv.visitMethodInsn(INVOKESTATIC, STANDARD_LIBRARY_CLASS,
+            mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_LIBRARY_CLASS,
                     "printString", "(Ljava/lang/String;)V", false);
             return idx + 1;
         }
@@ -2271,10 +2291,11 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                 error("not enough arguments for printf format");
                 return idx;
             }
+            pushLib();
             Expr arg = args.get(idx);
             compile(arg);
             coerceWidth(resultWidth(arg), net.loveruby.cflat.asm.Type.FLOAT64);
-            mv.visitMethodInsn(INVOKESTATIC, STANDARD_LIBRARY_CLASS,
+            mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_LIBRARY_CLASS,
                     "printDouble", "(D)V", false);
             return idx + 1;
         }

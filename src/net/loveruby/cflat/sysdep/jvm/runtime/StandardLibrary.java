@@ -7,30 +7,37 @@ import java.util.Arrays;
  * cflat program compiled with -arch=jvm, shared by every compiled program
  * (unlike NativeLibrary, generated fresh per program -- see its own
  * generated class doc). To make a function available everywhere without
- * regenerating anything, add a "public static" method here.
+ * regenerating anything, add a "public" instance method here.
  *
- * Two call shapes exist, depending on how CodeGenerator reaches this class:
+ * This is an ordinary object, constructed once per compiled program
+ * (CodeGenerator's emitClinit stores the one instance in the generated
+ * class's own "$lib" static field) and holding this program's whole
+ * simulated address space as the "mem" field below -- so a method that
+ * needs to read/write memory (strlen, strcpy, ...) just uses "mem"
+ * directly, and one that doesn't (abs, toupper, ...) simply never
+ * mentions it. A cflat pointer is a plain long byte-offset into mem; cast
+ * it with (int) to index mem directly (a JVM array can't be larger than
+ * 2^31 bytes anyway, so this never loses information for an address this
+ * backend could have handed out).
+ *
+ * The generated program class itself stays fully static, exactly as
+ * before this existed -- only calls *into* this library go through an
+ * instance, via the one shared "$lib".
+ *
+ * Two call shapes exist, depending on how CodeGenerator reaches a method:
  *
  *  - The compile-time intrinsics (putchar/puts/printf's own building
  *    blocks below) are called directly, with whatever signature is most
  *    convenient -- the compiler already knows their exact names and emits
- *    calls to them by hand, so there's no need for a uniform convention.
+ *    calls to them by hand.
  *
  *  - Everything else -- any function merely *declared* (e.g. via import)
  *    and called, not one of the three intrinsics above -- goes through
- *    the generic extern-call mechanism (CodeGenerator#compileNativeCall)
- *    and always receives this program's whole simulated address space as
- *    an implicit leading "byte[] mem" parameter, before its real cflat
- *    parameters (mapped the same way CodeGenerator#buildDescriptor maps
- *    a cflat signature: char/short/int/enum/_Bool -> JVM int, long/
- *    pointer -> JVM long, float/double -> their JVM equivalents). A
- *    pointer is a plain long byte-offset into mem; cast it with (int) to
- *    index mem directly (a JVM array can't be larger than 2^31 bytes
- *    anyway, so this never loses information for an address this backend
- *    could have handed out). Ignore the mem parameter in a method that
- *    has no need to read/write memory directly (abs, toupper, ...) --
- *    one uniform rule here needing no per-function metadata beats
- *    deciding case by case which functions need it.
+ *    the generic extern-call mechanism (CodeGenerator#compileNativeCall),
+ *    with parameters/return type mapped the same way
+ *    CodeGenerator#buildDescriptor maps a cflat signature: char/short/
+ *    int/enum/_Bool -> JVM int, long/pointer -> JVM long, float/double ->
+ *    their JVM equivalents.
  *
  * CodeGenerator keeps its own STANDARD_LIBRARY_FUNCTIONS set of names
  * already implemented here (a plain hardcoded list of names, deliberately
@@ -39,19 +46,24 @@ import java.util.Arrays;
  * a name added here. Update that set too when adding a method.
  */
 public class StandardLibrary {
+    protected final byte[] mem;
+
+    public StandardLibrary(byte[] mem) {
+        this.mem = mem;
+    }
 
     //
     // putchar/puts/printf's own building blocks -- called directly by
     // CodeGenerator (see compilePutchar/compilePuts/emitPrint*), not
-    // through the generic extern-call mechanism, so no "mem" parameter.
+    // through the generic extern-call mechanism.
     //
 
-    public static int putchar(int c) {
+    public int putchar(int c) {
         System.out.write(c);
         return c;
     }
 
-    public static int puts(String s) {
+    public int puts(String s) {
         System.out.println(s);
         // Real libc puts() returns a non-negative count or EOF; tracking
         // the real count isn't worth it here, so always report success
@@ -59,48 +71,48 @@ public class StandardLibrary {
         return 0;
     }
 
-    public static void printLiteral(String s) { System.out.print(s); }
-    public static void printInt(int v) { System.out.print(v); }
-    public static void printUnsignedInt(int v) { System.out.print(Integer.toUnsignedString(v)); }
-    public static void printLong(long v) { System.out.print(v); }
-    public static void printUnsignedLong(long v) { System.out.print(Long.toUnsignedString(v)); }
-    public static void printChar(char c) { System.out.print(c); }
-    public static void printString(String s) { System.out.print(s); }
-    public static void printDouble(double d) { System.out.print(d); }
+    public void printLiteral(String s) { System.out.print(s); }
+    public void printInt(int v) { System.out.print(v); }
+    public void printUnsignedInt(int v) { System.out.print(Integer.toUnsignedString(v)); }
+    public void printLong(long v) { System.out.print(v); }
+    public void printUnsignedLong(long v) { System.out.print(Long.toUnsignedString(v)); }
+    public void printChar(char c) { System.out.print(c); }
+    public void printString(String s) { System.out.print(s); }
+    public void printDouble(double d) { System.out.print(d); }
 
     //
     // <ctype.h> -- pure functions, "mem" unused.
     //
 
-    public static int isdigit(byte[] mem, int c) {
+    public int isdigit(int c) {
         return (c >= '0' && c <= '9') ? 1 : 0;
     }
 
-    public static int isalpha(byte[] mem, int c) {
+    public int isalpha(int c) {
         return ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) ? 1 : 0;
     }
 
-    public static int isalnum(byte[] mem, int c) {
-        return (isalpha(mem, c) != 0 || isdigit(mem, c) != 0) ? 1 : 0;
+    public int isalnum(int c) {
+        return (isalpha(c) != 0 || isdigit(c) != 0) ? 1 : 0;
     }
 
-    public static int isspace(byte[] mem, int c) {
+    public int isspace(int c) {
         return (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == 0x0B) ? 1 : 0;
     }
 
-    public static int isupper(byte[] mem, int c) {
+    public int isupper(int c) {
         return (c >= 'A' && c <= 'Z') ? 1 : 0;
     }
 
-    public static int islower(byte[] mem, int c) {
+    public int islower(int c) {
         return (c >= 'a' && c <= 'z') ? 1 : 0;
     }
 
-    public static int toupper(byte[] mem, int c) {
+    public int toupper(int c) {
         return (c >= 'a' && c <= 'z') ? (c - 32) : c;
     }
 
-    public static int tolower(byte[] mem, int c) {
+    public int tolower(int c) {
         return (c >= 'A' && c <= 'Z') ? (c + 32) : c;
     }
 
@@ -110,13 +122,13 @@ public class StandardLibrary {
     // exposed to cflat code yet).
     //
 
-    public static long strlen(byte[] mem, long s) {
+    public long strlen(long s) {
         long len = 0;
         while (mem[at(s + len)] != 0) len++;
         return len;
     }
 
-    public static long strcpy(byte[] mem, long dst, long src) {
+    public long strcpy(long dst, long src) {
         long i = 0;
         byte b;
         do {
@@ -127,7 +139,7 @@ public class StandardLibrary {
         return dst;
     }
 
-    public static long strncpy(byte[] mem, long dst, long src, long n) {
+    public long strncpy(long dst, long src, long n) {
         boolean ended = false;
         for (long i = 0; i < n; i++) {
             if (!ended) {
@@ -142,13 +154,13 @@ public class StandardLibrary {
         return dst;
     }
 
-    public static long strcat(byte[] mem, long dst, long src) {
-        strcpy(mem, dst + strlen(mem, dst), src);
+    public long strcat(long dst, long src) {
+        strcpy(dst + strlen(dst), src);
         return dst;
     }
 
-    public static long strncat(byte[] mem, long dst, long src, long n) {
-        long dlen = strlen(mem, dst);
+    public long strncat(long dst, long src, long n) {
+        long dlen = strlen(dst);
         long i = 0;
         while (i < n) {
             byte b = mem[at(src + i)];
@@ -160,28 +172,28 @@ public class StandardLibrary {
         return dst;
     }
 
-    public static int strcmp(byte[] mem, long a, long b) {
+    public int strcmp(long a, long b) {
         long i = 0;
         while (true) {
-            int ca = ubyte(mem, a + i);
-            int cb = ubyte(mem, b + i);
+            int ca = ubyte(a + i);
+            int cb = ubyte(b + i);
             if (ca != cb) return ca - cb;
             if (ca == 0) return 0;
             i++;
         }
     }
 
-    public static int strncmp(byte[] mem, long a, long b, long n) {
+    public int strncmp(long a, long b, long n) {
         for (long i = 0; i < n; i++) {
-            int ca = ubyte(mem, a + i);
-            int cb = ubyte(mem, b + i);
+            int ca = ubyte(a + i);
+            int cb = ubyte(b + i);
             if (ca != cb) return ca - cb;
             if (ca == 0) return 0;
         }
         return 0;
     }
 
-    public static long strchr(byte[] mem, long s, int c) {
+    public long strchr(long s, int c) {
         byte target = (byte) c;
         long i = 0;
         while (true) {
@@ -192,25 +204,25 @@ public class StandardLibrary {
         }
     }
 
-    public static long memcpy(byte[] mem, long dst, long src, long n) {
+    public long memcpy(long dst, long src, long n) {
         System.arraycopy(mem, at(src), mem, at(dst), at(n));
         return dst;
     }
 
-    public static long memmove(byte[] mem, long dst, long src, long n) {
+    public long memmove(long dst, long src, long n) {
         System.arraycopy(mem, at(src), mem, at(dst), at(n));  // already overlap-safe
         return dst;
     }
 
-    public static long memset(byte[] mem, long dst, int c, long n) {
+    public long memset(long dst, int c, long n) {
         Arrays.fill(mem, at(dst), at(dst + n), (byte) c);
         return dst;
     }
 
-    public static int memcmp(byte[] mem, long a, long b, long n) {
+    public int memcmp(long a, long b, long n) {
         for (long i = 0; i < n; i++) {
-            int ca = ubyte(mem, a + i);
-            int cb = ubyte(mem, b + i);
+            int ca = ubyte(a + i);
+            int cb = ubyte(b + i);
             if (ca != cb) return ca - cb;
         }
         return 0;
@@ -221,33 +233,33 @@ public class StandardLibrary {
     // heap allocator.
     //
 
-    public static int abs(byte[] mem, int x) {
+    public int abs(int x) {
         return Math.abs(x);
     }
 
-    public static long labs(byte[] mem, long x) {
+    public long labs(long x) {
         return Math.abs(x);
     }
 
-    public static int atoi(byte[] mem, long s) {
-        return (int) atolValue(mem, s);
+    public int atoi(long s) {
+        return (int) atolValue(s);
     }
 
-    public static long atol(byte[] mem, long s) {
-        return atolValue(mem, s);
+    public long atol(long s) {
+        return atolValue(s);
     }
 
-    public static double atof(byte[] mem, long s) {
+    public double atof(long s) {
         StringBuilder sb = new StringBuilder();
-        long i = skipSpaces(mem, s);
-        int c = ubyte(mem, i);
+        long i = skipSpaces(s);
+        int c = ubyte(i);
         if (c == '+' || c == '-') {
             sb.append((char) c);
             i++;
         }
         boolean sawDigitOrDot = false;
         while (true) {
-            c = ubyte(mem, i);
+            c = ubyte(i);
             if ((c >= '0' && c <= '9') || c == '.') {
                 sawDigitOrDot = true;
                 sb.append((char) c);
@@ -260,13 +272,13 @@ public class StandardLibrary {
         if ((c == 'e' || c == 'E') && sawDigitOrDot) {
             sb.append((char) c);
             i++;
-            c = ubyte(mem, i);
+            c = ubyte(i);
             if (c == '+' || c == '-') {
                 sb.append((char) c);
                 i++;
             }
-            while (ubyte(mem, i) >= '0' && ubyte(mem, i) <= '9') {
-                sb.append((char) ubyte(mem, i));
+            while (ubyte(i) >= '0' && ubyte(i) <= '9') {
+                sb.append((char) ubyte(i));
                 i++;
             }
         }
@@ -289,27 +301,27 @@ public class StandardLibrary {
         return (int) addr;
     }
 
-    private static int ubyte(byte[] mem, long addr) {
+    private int ubyte(long addr) {
         return mem[at(addr)] & 0xFF;
     }
 
-    private static long skipSpaces(byte[] mem, long s) {
+    private long skipSpaces(long s) {
         long i = s;
-        while (isspace(mem, ubyte(mem, i)) != 0) i++;
+        while (isspace(ubyte(i)) != 0) i++;
         return i;
     }
 
-    private static long atolValue(byte[] mem, long s) {
-        long i = skipSpaces(mem, s);
+    private long atolValue(long s) {
+        long i = skipSpaces(s);
         boolean neg = false;
-        int c = ubyte(mem, i);
+        int c = ubyte(i);
         if (c == '+' || c == '-') {
             neg = (c == '-');
             i++;
         }
         long value = 0;
         while (true) {
-            c = ubyte(mem, i);
+            c = ubyte(i);
             if (c < '0' || c > '9') break;
             value = value * 10 + (c - '0');
             i++;

@@ -398,34 +398,38 @@ compiler already knows about directly -- compiles to a call to
 generates *as source*, next to the `.class` file, alongside the
 hand-written `net.loveruby.cflat.sysdep.jvm.runtime.StandardLibrary`:
 
-  * **`StandardLibrary`** is checked into cbc itself and shared by every
-    compiled program, and already implements a useful chunk of libc:
-    `<ctype.h>` (`isdigit`, `isalpha`, `isalnum`, `isspace`, `isupper`,
-    `islower`, `toupper`, `tolower`), `<string.h>` (`strlen`, `strcpy`,
-    `strncpy`, `strcat`, `strncat`, `strcmp`, `strncmp`, `strchr`,
-    `memcpy`, `memmove`, `memset`, `memcmp`), and `<stdlib.h>`'s numeric
-    conversions (`abs`, `labs`, `atoi`, `atol`, `atof`) -- all operating
-    on memory the caller already owns, since this backend has no
-    general-purpose `malloc`/`free` exposed to cflat code yet. Add a
-    `public static` method there to make another function available to
-    every compiled program without regenerating anything: its first
-    parameter is always `byte[] mem` (this program's whole simulated
-    address space -- a cflat pointer is a plain `long` byte offset into
-    it, cast with `(int)` to index it directly), even if the
-    implementation doesn't need it (uniform and simple beats deciding
-    per function whether to include it), followed by the cflat
-    parameters/return type mapped the way `CodeGenerator#buildDescriptor`
-    always maps them: `int`/`long`/`float`/`double`.
+  * **`StandardLibrary`** is checked into cbc itself; one instance is
+    constructed per compiled program (in the generated `<clinit>`, held
+    in a `$lib` static field every call goes through) over that
+    program's own simulated address space, and already implements a
+    useful chunk of libc: `<ctype.h>` (`isdigit`, `isalpha`, `isalnum`,
+    `isspace`, `isupper`, `islower`, `toupper`, `tolower`), `<string.h>`
+    (`strlen`, `strcpy`, `strncpy`, `strcat`, `strncat`, `strcmp`,
+    `strncmp`, `strchr`, `memcpy`, `memmove`, `memset`, `memcmp`), and
+    `<stdlib.h>`'s numeric conversions (`abs`, `labs`, `atoi`, `atol`,
+    `atof`) -- all operating on memory the caller already owns, since
+    this backend has no general-purpose `malloc`/`free` exposed to
+    cflat code yet. Add a `public` instance method there to make
+    another function available to every compiled program without
+    regenerating anything: its parameters/return type are the cflat
+    ones, mapped the way `CodeGenerator#buildDescriptor` always maps
+    them (`int`/`long`/`float`/`double`); an implementation that needs
+    to read/write memory directly uses the inherited `mem` field (this
+    program's whole simulated address space -- a cflat pointer is a
+    plain `long` byte offset into it, cast with `(int)` to index it),
+    and one that doesn't simply never mentions it.
   * **`NativeLibrary`** is generated fresh per program, `extends
-    StandardLibrary`, and contains one stub -- throwing
-    `NotImplementedException` -- for each external function the program
-    calls that isn't already in `StandardLibrary` (checked by a plain
-    hardcoded name list in `CodeGenerator`, not reflection, so generating
-    it never needs `StandardLibrary` itself loaded or even built). A name
-    already in `StandardLibrary` is called there directly; anything else
-    is called through `NativeLibrary` -- which, since it extends
-    `StandardLibrary`, still resolves correctly either way once
-    implemented.
+    StandardLibrary` (so a hand-written override can use `mem` the same
+    way), and contains one stub -- throwing `NotImplementedException`
+    -- for each external function the program calls that isn't already
+    in `StandardLibrary` (checked by a plain hardcoded name list in
+    `CodeGenerator`, not reflection, so generating it never needs
+    `StandardLibrary` itself loaded or even built). A name already in
+    `StandardLibrary` is called on the one shared `$lib` instance
+    directly; anything else gets a fresh `NativeLibrary` instance
+    constructed at the call site instead (its own existence isn't known
+    until every function has been compiled, unlike `StandardLibrary`'s,
+    so it can't be cached in a field set up as early as `<clinit>`).
 
 Compiling a program that calls such a function always succeeds; only
 actually *calling* an unimplemented one fails, at run time, with
