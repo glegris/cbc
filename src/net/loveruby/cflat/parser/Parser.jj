@@ -71,6 +71,12 @@ public class Parser {
     private LibraryLoader loader;
     private ErrorHandler errorHandler;
     private Set<String> knownTypedefs;
+    // Where a struct/union/enum defined *inside* a function body (see
+    // block()) gets hoisted to -- the same Declarations top_defs() is
+    // building for the whole file, so it's registered exactly like a
+    // top-level one (same flat, file-wide struct/union/enum-tag
+    // namespace; see README.md for the resulting scoping caveat).
+    private Declarations topDecls = new Declarations();
     // #@@}
 
     // #@@range/ctor1{
@@ -567,6 +573,7 @@ Declarations top_defs():
     TypedefNode typedef;
 }
 {
+        { topDecls = decls; }
     ( LOOKAHEAD(storage() typeref() <IDENTIFIER> "(")
       defun=defun()         { decls.addDefun(defun); }
     | LOOKAHEAD(<CONST> type() <IDENTIFIER> "=")
@@ -778,12 +785,25 @@ CBCParameter param():
 // still spans the whole enclosing block rather than starting only at its
 // declaration point (a deliberate, documented simplification -- see
 // README.md).
+//
+// A struct/union/enum can also be defined inside a function body now
+// (also C99); it's hoisted straight into topDecls -- the very same
+// Declarations top_defs() is building for the whole file -- so it's
+// registered exactly like a top-level one, in the same flat, file-wide
+// struct/union/enum-tag namespace (another documented simplification:
+// real C99 would scope the tag to this block alone, so two functions
+// could each define their own unrelated "struct Point" -- here the
+// second definition of the same tag name anywhere in the file is a
+// duplicate-type-definition error, same as two top-level ones would be).
 BlockNode block():
 {
     Token t;
     List<DefinedVariable> vars = new ArrayList<DefinedVariable>();
     List<StmtNode> stmts = new ArrayList<StmtNode>();
     List<DefinedVariable> declared;
+    StructNode localStruct;
+    UnionNode localUnion;
+    Declarations localEnum;
     StmtNode s;
 }
 {
@@ -798,6 +818,9 @@ BlockNode block():
                 }
             }
         }
+    | localStruct=defstruct() { topDecls.addDefstruct(localStruct); }
+    | localUnion=defunion()   { topDecls.addDefunion(localUnion); }
+    | localEnum=defenum()     { topDecls.add(localEnum); }
     | s=stmt() { if (s != null) stmts.add(s); }
     )*
     "}"

@@ -169,6 +169,28 @@ described below:
     containing just the declaration followed by the loop, so nesting two
     such loops with the same variable name (`for (int i ...) for (int i
     ...) ...`) works correctly, each `i` shadowing independently.
+  * **`struct`/`union`/`enum` defined inside a function body**, not just
+    at file scope -- exactly the same syntax as a top-level one:
+    ```c
+    int distance(void) {
+        struct Point { int x; int y; };
+        struct Point p;
+        p.x = 3; p.y = 4;
+        return p.x + p.y;
+    }
+    ```
+    A simplification versus real C99, needed because this compiler has
+    always had one single, flat, file-wide struct/union/enum-tag
+    namespace with no notion of block scope for tags (this predates
+    everything added in this series of changes): a local definition is
+    hoisted into that same file-wide namespace rather than actually
+    scoped to its enclosing block, so it's usable from any function in
+    the file (even one defined earlier in the source, or after the
+    function that defines it returns) and, like a top-level one, a
+    second definition of the same tag name anywhere else in the file --
+    even in another, unrelated function -- is a duplicate-type-definition
+    error rather than two independent local types the way real C99 would
+    treat them.
 
 ## Preprocessor
 
