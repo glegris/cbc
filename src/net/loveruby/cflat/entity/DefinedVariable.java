@@ -3,12 +3,15 @@ import net.loveruby.cflat.type.Type;
 import net.loveruby.cflat.ast.TypeNode;
 import net.loveruby.cflat.ast.ExprNode;
 import net.loveruby.cflat.ir.Expr;
+import net.loveruby.cflat.ir.StaticInitEntry;
 import net.loveruby.cflat.asm.Symbol;
 import net.loveruby.cflat.asm.NamedSymbol;
+import java.util.List;
 
 public class DefinedVariable extends Variable {
     protected ExprNode initializer;
     protected Expr ir;
+    protected List<StaticInitEntry> staticInitEntries;
     protected long sequence;
     protected Symbol symbol;
 
@@ -59,6 +62,25 @@ public class DefinedVariable extends Variable {
     }
 
     public Expr ir() { return ir; }
+
+    /** Set instead of ir() for a "{...}" (aggregate) initializer at
+     *  static storage duration (a global, or a "static" local): a flat
+     *  list of (byte offset, compile-time-constant value) leaves, since
+     *  there is no single Expr that could represent "this struct/array's
+     *  several members/elements" the way a plain scalar initializer can.
+     *  See sysdep/{x86,jvm}/CodeGenerator's static-data emission for how
+     *  each backend turns this into actual bytes. */
+    public void setStaticInitEntries(List<StaticInitEntry> entries) {
+        this.staticInitEntries = entries;
+    }
+
+    public boolean hasStaticInitEntries() {
+        return staticInitEntries != null;
+    }
+
+    public List<StaticInitEntry> staticInitEntries() {
+        return staticInitEntries;
+    }
 
     protected void _dump(net.loveruby.cflat.ast.Dumper d) {
         d.printMember("name", name);

@@ -79,6 +79,15 @@ class TypeChecker extends Visitor {
             return;
         }
         if (var.hasInitializer()) {
+            if (var.initializer() instanceof AggregateLiteralNode) {
+                // A brace initializer is fine for an array/struct/union
+                // (isInvalidLHSType would otherwise reject an array
+                // here, since a *plain* "arr = ..." assignment isn't
+                // allowed -- but whole-array initialization is a
+                // different thing, checked on its own below).
+                checkAggregateLiteral(var.type(), (AggregateLiteralNode) var.initializer());
+                return;
+            }
             if (isInvalidLHSType(var.type())) {
                 error(var.location(), "invalid LHS type: " + var.type());
                 return;
@@ -86,6 +95,80 @@ class TypeChecker extends Visitor {
             check(var.initializer());
             var.setInitializer(implicitCast(var.type(), var.initializer()));
         }
+    }
+
+    /** Checks a brace initializer ("{ e0, e1, ... }") against the type it
+     *  is initializing, casting each leaf element in place (mutating the
+     *  AggregateLiteralNode's own element list) the same way a plain
+     *  scalar initializer is cast in checkVariable. Recurses for a
+     *  nested brace list (a struct/array member that is itself an
+     *  array/struct/union).
+     *
+     *  Scope note: the target array must have an explicit length --
+     *  inferring it from the initializer list's size (like C's "int
+     *  a[] = {1,2,3};") isn't supported, since by the time TypeChecker
+     *  runs, TypeResolver has already bound the variable's type and
+     *  there is no clean way to go back and resize it. Designated
+     *  initializers (".field = x", "[i] = x") aren't supported either:
+     *  elements always map to array indices / struct members in order.
+     */
+    private void checkAggregateLiteral(Type targetType, AggregateLiteralNode lit) {
+        lit.setType(targetType);
+        List<ExprNode> elems = lit.elements();
+        if (targetType.isArray()) {
+            ArrayType at = targetType.getArrayType();
+            if (! at.isAllocatedArray()) {
+                error(lit, "array must have an explicit size to use a brace "
+                        + "initializer (inferring it from the initializer list "
+                        + "is not supported): " + targetType);
+                return;
+            }
+            if (elems.size() > at.length()) {
+                error(lit, "too many initializers for " + targetType + ": expected "
+                        + "at most " + at.length() + ", got " + elems.size());
+                return;
+            }
+            for (int i = 0; i < elems.size(); i++) {
+                checkAggregateElement(at.baseType(), elems, i);
+            }
+        }
+        else if (targetType.isStruct() || targetType.isUnion()) {
+            List<Slot> members = targetType.getCompositeType().members();
+            if (targetType.isUnion() && elems.size() > 1) {
+                error(lit, "too many initializers for union " + targetType
+                        + ": a union initializer sets only its first member");
+                return;
+            }
+            if (elems.size() > members.size()) {
+                error(lit, "too many initializers for " + targetType + ": expected "
+                        + "at most " + members.size() + ", got " + elems.size());
+                return;
+            }
+            for (int i = 0; i < elems.size(); i++) {
+                checkAggregateElement(members.get(i).type(), elems, i);
+            }
+        }
+        else if (elems.size() == 1) {
+            // A scalar may be initialized with a single-element brace
+            // list too ("int x = {5};" is legal C, equivalent to
+            // "int x = 5;").
+            checkAggregateElement(targetType, elems, 0);
+        }
+        else {
+            error(lit, "cannot use a " + elems.size() + "-element brace initializer "
+                    + "for " + targetType);
+        }
+    }
+
+    private void checkAggregateElement(Type targetType, List<ExprNode> elems, int i) {
+        ExprNode elem = elems.get(i);
+        if (elem instanceof AggregateLiteralNode) {
+            checkAggregateLiteral(targetType, (AggregateLiteralNode) elem);
+            return;
+        }
+        check(elem);
+        if (! checkRHS(elem)) return;
+        elems.set(i, implicitCast(targetType, elem));
     }
 
     public Void visit(ExprStmtNode node) {
@@ -208,6 +291,10 @@ class TypeChecker extends Visitor {
         }
         else if (isInvalidLHSType(lhs.type())) {
             error(lhs, "invalid LHS expression type: " + lhs.type());
+            return false;
+        }
+        else if (lhs.type().isConst()) {
+            error(lhs, "cannot assign to a const-qualified value: " + lhs.type());
             return false;
         }
         return true;
@@ -435,6 +522,11 @@ class TypeChecker extends Visitor {
         else if (node.expr().type().isArray()) {
             // We cannot modify non-parameter array.
             wrongTypeError(node.expr(), node.operator());
+            return;
+        }
+        else if (node.expr().type().isConst()) {
+            error(node.expr(), "cannot " + node.operator()
+                    + " a const-qualified value: " + node.expr().type());
             return;
         }
         else {

@@ -229,7 +229,11 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
 
         FunctionCompiler fc = new FunctionCompiler(mv);
         for (DefinedVariable var : globalVarsInOrder) {
-            if (var.hasInitializer() && var.ir() != null) {
+            if (var.hasStaticInitEntries()) {
+                fc.storeStaticInitEntries(globalAddr.get(var), var.location(),
+                        var.staticInitEntries());
+            }
+            else if (var.hasInitializer() && var.ir() != null) {
                 fc.storeGlobalInit(globalAddr.get(var), var.location(), var.ir(),
                         asmWidthOf(var.type()));
             }
@@ -924,6 +928,23 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                 net.loveruby.cflat.asm.Type t = asmWidthOf(func.returnType());
                 mv.visitVarInsn(loadOpcode(t), returnValueSlot);
                 mv.visitInsn(returnOpcode(t));
+            }
+        }
+
+        /** Stores every leaf of a "{...}" (aggregate) global/static
+         *  initializer at its own address, used only from <clinit>. $mem
+         *  starts out zeroed (a fresh byte[] from NEWARRAY already is),
+         *  so unlike the x86 backend's .data section, there is no need
+         *  to explicitly fill the gaps a partial initializer leaves. */
+        void storeStaticInitEntries(long baseAddr, Location loc,
+                List<StaticInitEntry> entries) {
+            currentLocation = loc;
+            for (StaticInitEntry ent : entries) {
+                pushBuf();
+                mv.visitLdcInsn(baseAddr + ent.offset());
+                mv.visitInsn(L2I);
+                compile(ent.value());
+                emitStore(ent.value().type());
             }
         }
 

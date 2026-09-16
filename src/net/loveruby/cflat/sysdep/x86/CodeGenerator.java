@@ -187,10 +187,41 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator,
             file._type(sym, "@object");
             file._size(sym, var.allocSize());
             file.label(sym);
-            generateImmediate(file, var.type().allocSize(), var.ir());
+            if (var.hasStaticInitEntries()) {
+                generateAggregateImmediate(file, var.allocSize(), var.staticInitEntries());
+            }
+            else {
+                generateImmediate(file, var.type().allocSize(), var.ir());
+            }
         }
     }
     // #@@}
+
+    /** Generates a "{...}" initializer's static data: each leaf's value
+     *  at its own offset, with explicit zero bytes filling any gap --
+     *  unlike .bss, .data is not auto-zeroed, so a partially-initialized
+     *  aggregate (or padding between/after members) needs real zero
+     *  bytes emitted for the rest. Entries are assumed sorted by offset
+     *  (guaranteed by how IRGenerator#flattenStaticAggregate builds them:
+     *  array elements/struct members are always visited in increasing
+     *  offset order). */
+    private void generateAggregateImmediate(AssemblyCode file, long totalSize,
+            List<StaticInitEntry> entries) {
+        long pos = 0;
+        for (StaticInitEntry ent : entries) {
+            while (pos < ent.offset()) {
+                file._byte(0);
+                pos++;
+            }
+            long size = ent.value().type().size();
+            generateImmediate(file, size, ent.value());
+            pos += size;
+        }
+        while (pos < totalSize) {
+            file._byte(0);
+            pos++;
+        }
+    }
 
     /** Generates immediate values for .data section */
     // #@@range/generateImmediate{

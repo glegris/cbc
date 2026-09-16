@@ -43,51 +43,53 @@ public interface ParserConstants {
   /** RegularExpression Id. */
   int CONST = 18;
   /** RegularExpression Id. */
-  int SIGNED = 19;
+  int VOLATILE = 19;
   /** RegularExpression Id. */
-  int UNSIGNED = 20;
+  int SIGNED = 20;
   /** RegularExpression Id. */
-  int IF = 21;
+  int UNSIGNED = 21;
   /** RegularExpression Id. */
-  int ELSE = 22;
+  int IF = 22;
   /** RegularExpression Id. */
-  int SWITCH = 23;
+  int ELSE = 23;
   /** RegularExpression Id. */
-  int CASE = 24;
+  int SWITCH = 24;
   /** RegularExpression Id. */
-  int DEFAULT_ = 25;
+  int CASE = 25;
   /** RegularExpression Id. */
-  int WHILE = 26;
+  int DEFAULT_ = 26;
   /** RegularExpression Id. */
-  int DO = 27;
+  int WHILE = 27;
   /** RegularExpression Id. */
-  int FOR = 28;
+  int DO = 28;
   /** RegularExpression Id. */
-  int RETURN = 29;
+  int FOR = 29;
   /** RegularExpression Id. */
-  int BREAK = 30;
+  int RETURN = 30;
   /** RegularExpression Id. */
-  int CONTINUE = 31;
+  int BREAK = 31;
   /** RegularExpression Id. */
-  int GOTO = 32;
+  int CONTINUE = 32;
   /** RegularExpression Id. */
-  int TYPEDEF = 33;
+  int GOTO = 33;
   /** RegularExpression Id. */
-  int IMPORT = 34;
+  int TYPEDEF = 34;
   /** RegularExpression Id. */
-  int SIZEOF = 35;
+  int IMPORT = 35;
   /** RegularExpression Id. */
-  int IDENTIFIER = 36;
+  int SIZEOF = 36;
   /** RegularExpression Id. */
-  int INTEGER = 37;
+  int IDENTIFIER = 37;
   /** RegularExpression Id. */
-  int FLOATLIT = 38;
+  int INTEGER = 38;
   /** RegularExpression Id. */
-  int EXPONENT = 39;
+  int FLOATLIT = 39;
   /** RegularExpression Id. */
-  int CHARACTER = 44;
+  int EXPONENT = 40;
   /** RegularExpression Id. */
-  int STRING = 49;
+  int CHARACTER = 45;
+  /** RegularExpression Id. */
+  int STRING = 50;
 
   /** Lexical state. */
   int DEFAULT = 0;
@@ -121,6 +123,7 @@ public interface ParserConstants {
     "\"static\"",
     "\"extern\"",
     "\"const\"",
+    "\"volatile\"",
     "\"signed\"",
     "\"unsigned\"",
     "\"if\"",
@@ -143,24 +146,24 @@ public interface ParserConstants {
     "<FLOATLIT>",
     "<EXPONENT>",
     "\"\\\'\"",
-    "<token of kind 41>",
     "<token of kind 42>",
     "<token of kind 43>",
+    "<token of kind 44>",
     "\"\\\'\"",
     "\"\\\"\"",
-    "<token of kind 46>",
     "<token of kind 47>",
     "<token of kind 48>",
+    "<token of kind 49>",
     "\"\\\"\"",
     "\"(\"",
     "\".\"",
     "\";\"",
     "\"=\"",
     "\",\"",
-    "\")\"",
-    "\"...\"",
     "\"{\"",
     "\"}\"",
+    "\")\"",
+    "\"...\"",
     "\"[\"",
     "\"]\"",
     "\"*\"",

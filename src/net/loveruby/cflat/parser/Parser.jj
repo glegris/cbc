@@ -167,6 +167,53 @@ public class Parser {
     }
     // #@@}
 
+    // #@@range/buildEnumDecls{
+    /** An enum is just sugar over int here: each enumerator becomes a
+     *  top-level named int constant (reusing the existing "const"
+     *  machinery), and the enum's own tag name becomes a typedef alias
+     *  for int (reusing the existing typedef machinery) -- so "enum
+     *  Color" and "Color" both work as a type afterward, and no new
+     *  Type/Entity classes are needed at all. */
+    private Declarations buildEnumDecls(Location loc, String enumName,
+            List<String> names, List<ExprNode> values) throws ParseException {
+        Declarations decls = new Declarations();
+        Long next = 0L;
+        for (int i = 0; i < names.size(); i++) {
+            String memberName = names.get(i);
+            ExprNode value = values.get(i);
+            ExprNode constValue;
+            if (value != null) {
+                constValue = value;
+                if (value instanceof IntegerLiteralNode) {
+                    next = ((IntegerLiteralNode)value).value() + 1;
+                }
+                else {
+                    // Any constant expression is accepted as an
+                    // enumerator's own value (same leniency as a plain
+                    // "const"), but auto-incrementing after it would
+                    // require evaluating it now, which this parser
+                    // can't do in general -- so the *next* enumerator
+                    // must also have an explicit value.
+                    next = null;
+                }
+            }
+            else {
+                if (next == null) {
+                    throw new ParseException("enum " + enumName + ": enumerator '"
+                            + memberName + "' needs an explicit value (cannot "
+                            + "auto-increment after a non-literal enumerator value)");
+                }
+                constValue = new IntegerLiteralNode(loc, IntegerTypeRef.intRef(), next);
+                next = next + 1;
+            }
+            decls.addConstant(new Constant(new TypeNode(IntegerTypeRef.intRef()),
+                    memberName, constValue));
+        }
+        decls.addTypedef(new TypedefNode(loc, IntegerTypeRef.intRef(), enumName));
+        return decls;
+    }
+    // #@@}
+
     // #@@range/floatNode{
     private FloatLiteralNode floatNode(Location loc, String image) {
         if (image.endsWith("f") || image.endsWith("F")) {
@@ -332,6 +379,7 @@ TOKEN: {
     | <STATIC   : "static">
     | <EXTERN   : "extern">
     | <CONST    : "const">
+    | <VOLATILE : "volatile">
     | <SIGNED   : "signed">
     | <UNSIGNED : "unsigned">
     | <IF       : "if">
@@ -433,6 +481,7 @@ Declarations declaration_file():
     Constant defconst;
     StructNode defstruct;
     UnionNode defunion;
+    Declarations defenum;
     TypedefNode typedef;
 }
 {
@@ -446,6 +495,7 @@ Declarations declaration_file():
     | defconst=defconst()   { decls.addConstant(defconst); }
     | defstruct=defstruct() { decls.addDefstruct(defstruct); }
     | defunion=defunion()   { decls.addDefunion(defunion); }
+    | defenum=defenum()     { decls.add(defenum); }
     | typedef=typedef()     { decls.addTypedef(typedef); }
     )*
     <EOF>
@@ -507,16 +557,19 @@ Declarations top_defs():
     Constant defconst;
     StructNode defstruct;
     UnionNode defunion;
+    Declarations defenum;
     TypedefNode typedef;
 }
 {
     ( LOOKAHEAD(storage() typeref() <IDENTIFIER> "(")
       defun=defun()         { decls.addDefun(defun); }
+    | LOOKAHEAD(<CONST> type() <IDENTIFIER> "=")
+      defconst=defconst()   { decls.addConstant(defconst); }
     | LOOKAHEAD(3)
       defvars=defvars()     { decls.addDefvars(defvars); }
-    | defconst=defconst()   { decls.addConstant(defconst); }
     | defstruct=defstruct() { decls.addDefstruct(defstruct); }
     | defunion=defunion()   { decls.addDefunion(defunion); }
+    | defenum=defenum()     { decls.add(defenum); }
     | typedef=typedef()     { decls.addTypedef(typedef); }
     )*
         {
@@ -535,12 +588,12 @@ List<DefinedVariable> defvars():
     ExprNode init = null;
 }
 {
-    priv=storage() type=type() name=name() ["=" init=expr()]
+    priv=storage() type=type() name=name() ["=" init=initializer()]
         {
             defs.add(new DefinedVariable(priv, type, name, init));
             init = null;
         }
-    ( "," name=name() ["=" init=expr()]
+    ( "," name=name() ["=" init=initializer()]
         {
             defs.add(new DefinedVariable(priv, type, name, init));
             init = null;
@@ -548,6 +601,33 @@ List<DefinedVariable> defvars():
     )* ";"
         {
             return defs;
+        }
+}
+// #@@}
+
+// #@@range/initializer{
+// A variable's initializer: either a plain expression, or a brace-
+// enclosed list (for an array/struct/union), which can itself nest
+// (e.g. "{1, {2, 3}}" for an array of structs, or a multi-dim array).
+ExprNode initializer():
+{ ExprNode e; }
+{
+      e=aggregate_literal() { return e; }
+    | e=expr()               { return e; }
+}
+
+ExprNode aggregate_literal():
+{
+    Token t;
+    List<ExprNode> elems = new ArrayList<ExprNode>();
+    ExprNode e;
+}
+{
+    t="{" e=initializer() { elems.add(e); }
+    ("," e=initializer() { elems.add(e); })*
+    "}"
+        {
+            return new AggregateLiteralNode(location(t), elems);
         }
 }
 // #@@}
@@ -697,6 +777,35 @@ UnionNode defunion():
         }
 }
 
+// #@@range/defenum{
+Declarations defenum():
+{
+    Token t;
+    String n;
+    List<String> names = new ArrayList<String>();
+    List<ExprNode> values = new ArrayList<ExprNode>();
+    String memberName;
+    ExprNode memberValue;
+}
+{
+    t=<ENUM> n=name()
+        { addType(n); }
+    "{"
+    memberName=name()
+        { names.add(memberName); values.add(null); }
+    [ "=" memberValue=expr() { values.set(values.size() - 1, memberValue); } ]
+    ( ","
+      memberName=name()
+        { names.add(memberName); values.add(null); }
+      [ "=" memberValue=expr() { values.set(values.size() - 1, memberValue); } ]
+    )*
+    "}" ";"
+        {
+            return buildEnumDecls(location(t), n, names, values);
+        }
+}
+// #@@}
+
 // #@@range/member_list{
 List<Slot> member_list():
 {
@@ -752,9 +861,20 @@ UndefinedVariable vardecl():
 
 // #@@range/type{
 TypeNode type():
-{ TypeRef ref; }
 {
-    ref=typeref() { return new TypeNode(ref); }
+    TypeRef ref;
+    boolean isConst = false;
+    boolean isVolatile = false;
+}
+{
+    ( <CONST> { isConst = true; } | <VOLATILE> { isVolatile = true; } )*
+    ref=typeref()
+        {
+            if (isConst || isVolatile) {
+                ref = new QualifiedTypeRef(ref, isConst, isVolatile);
+            }
+            return new TypeNode(ref);
+        }
 }
 // #@@}
 
@@ -848,6 +968,8 @@ TypeRef typeref_base():
         { return new StructTypeRef(location(t), name.image); }
     | t=<UNION> name=<IDENTIFIER>
         { return new UnionTypeRef(location(t), name.image); }
+    | t=<ENUM> name=<IDENTIFIER>
+        { return new UserTypeRef(location(t), name.image); }
     | LOOKAHEAD({isType(getToken(1).image)}) name=<IDENTIFIER>
         { return new UserTypeRef(location(name), name.image); }
 }
@@ -1044,16 +1166,20 @@ BlockNode case_body():
 {
     LinkedList<StmtNode> stmts = new LinkedList<StmtNode>();
     StmtNode s;
+    Token t;
 }
 {
-    (s=stmt() { if (s != null) stmts.add(s); })+
+        { t = getToken(1); }
+    (s=stmt() { if (s != null) stmts.add(s); })*
         {
-            // last stmt of case clause must be break stmt.
-            if (! (stmts.getLast() instanceof BreakNode)) {
-                throw new ParseException(
-                  "missing break statement at the last of case clause");
-            }
-            return new BlockNode(stmts.get(0).location(),
+            // A case clause with no "break" at the end falls through
+            // into the next one, same as real C switch statements (see
+            // IRGenerator#visit(SwitchNode): case bodies are already
+            // emitted as one straight-line sequence of labeled
+            // statements, so falling through was always what the IR
+            // naturally did here -- only this "must end in break" parser
+            // restriction ever prevented it).
+            return new BlockNode(location(t),
                                  new ArrayList<DefinedVariable>(),
                                  stmts);
         }

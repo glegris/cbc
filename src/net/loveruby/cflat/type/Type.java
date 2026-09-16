@@ -23,6 +23,8 @@ public abstract class Type {
     public boolean isUnion() { return false; }
     public boolean isUserType() { return false; }
     public boolean isFunction() { return false; }
+    public boolean isConst() { return false; }
+    public boolean isVolatile() { return false; }
 
     // Ability methods (unary)
     public boolean isAllocatedArray() { return false; }

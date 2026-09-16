@@ -91,6 +91,13 @@ public class TypeTable {
                 table.put(fref, t);
                 return t;
             }
+            else if (ref instanceof QualifiedTypeRef) {
+                QualifiedTypeRef qref = (QualifiedTypeRef)ref;
+                Type t = new QualifiedType(get(qref.baseType()),
+                                          qref.isConst(), qref.isVolatile());
+                table.put(qref, t);
+                return t;
+            }
             throw new Error("unregistered type: " + ref.toString());
         }
         return type;

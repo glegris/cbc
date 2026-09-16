@@ -25,7 +25,13 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
     public IR generate(AST ast) throws SemanticException {
         for (DefinedVariable var : ast.definedVariables()) {
             if (var.hasInitializer()) {
-                var.setIR(transformExpr(var.initializer()));
+                if (var.initializer() instanceof AggregateLiteralNode) {
+                    var.setStaticInitEntries(flattenStaticAggregate(
+                            var.type(), (AggregateLiteralNode) var.initializer(), 0));
+                }
+                else {
+                    var.setIR(transformExpr(var.initializer()));
+                }
             }
         }
         for (DefinedFunction f : ast.definedFunctions()) {
@@ -166,7 +172,22 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
         scopeStack.add(node.scope());
         for (DefinedVariable var : node.variables()) {
             if (var.hasInitializer()) {
-                if (var.isPrivate()) {
+                if (var.initializer() instanceof AggregateLiteralNode) {
+                    AggregateLiteralNode lit = (AggregateLiteralNode) var.initializer();
+                    if (var.isPrivate()) {
+                        // static variables: same static-data mechanism as globals
+                        var.setStaticInitEntries(flattenStaticAggregate(var.type(), lit, 0));
+                    }
+                    else {
+                        // automatic (stack) variables: lower to real
+                        // assignments, run each time this declaration
+                        // is reached at runtime -- exactly like C's own
+                        // "T a[3] = {...};" semantics.
+                        assignAggregateLiteral(var.location(),
+                                addressOf(ref(var)), var.type(), lit);
+                    }
+                }
+                else if (var.isPrivate()) {
                     // static variables
                     var.setIR(transformExpr(var.initializer()));
                 }
@@ -761,6 +782,157 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
 
     public Expr visit(StringLiteralNode node) {
         return new Str(asmType(node.type()), node.entry());
+    }
+
+    public Expr visit(AggregateLiteralNode node) {
+        // Only ever reached as DefinedVariable#initializer(), which both
+        // the global/static-local path (flattenStaticAggregate) and the
+        // automatic-local path (assignAggregateLiteral) intercept before
+        // generic expression transformation ever gets here.
+        throw new Error("must not happen: AggregateLiteralNode reached "
+                + "generic expression transformation");
+    }
+
+    //
+    // Aggregate ("{...}") initializers
+    //
+
+    /** Lowers a "{...}" initializer for an *automatic* (stack) variable
+     *  into real assignment statements, run each time this declaration
+     *  is reached at runtime -- e.g. "int[3] a = {1,2,f()};" becomes
+     *  "a[0]=1; a[1]=2; a[2]=f();". destAddr is the address the literal
+     *  is initializing (its own address for the top-level call; a
+     *  member/element address for a recursive, nested one). */
+    private void assignAggregateLiteral(Location loc, Expr destAddr, Type destType,
+            AggregateLiteralNode lit) {
+        List<ExprNode> elems = lit.elements();
+        if (destType.isArray()) {
+            Type elemType = destType.baseType();
+            long elemSize = elemType.allocSize();
+            for (int i = 0; i < elems.size(); i++) {
+                Expr elemAddr = new Bin(ptr_t(), Op.ADD, destAddr, ptrdiff(i * elemSize));
+                assignAggregateElement(loc, elemAddr, elemType, elems.get(i));
+            }
+        }
+        else if (destType.isStruct() || destType.isUnion()) {
+            destType.getCompositeType().size();  // force member offsets to be computed
+            List<Slot> members = destType.getCompositeType().members();
+            for (int i = 0; i < elems.size(); i++) {
+                Slot m = members.get(i);
+                Expr elemAddr = new Bin(ptr_t(), Op.ADD, destAddr, ptrdiff(m.offset()));
+                assignAggregateElement(loc, elemAddr, m.type(), elems.get(i));
+            }
+        }
+        else {
+            // scalar via single-element brace (already validated by
+            // TypeChecker#checkAggregateLiteral)
+            assignAggregateElement(loc, destAddr, destType, elems.get(0));
+        }
+    }
+
+    private void assignAggregateElement(Location loc, Expr elemAddr, Type elemType,
+            ExprNode elemInit) {
+        if (elemInit instanceof AggregateLiteralNode) {
+            assignAggregateLiteral(loc, elemAddr, elemType, (AggregateLiteralNode) elemInit);
+        }
+        else {
+            assign(loc, mem(elemAddr, elemType), transformExpr(elemInit));
+        }
+    }
+
+    /** Flattens a "{...}" initializer for a *static*-storage-duration
+     *  variable (a global, or a "static" local) into a flat list of
+     *  (byte offset, constant value) leaves -- see StaticInitEntry and
+     *  DefinedVariable#setStaticInitEntries. baseOffset is 0 for the
+     *  top-level call, and a member/element's own offset for a
+     *  recursive, nested one. */
+    private List<StaticInitEntry> flattenStaticAggregate(Type destType,
+            AggregateLiteralNode lit, long baseOffset) {
+        List<StaticInitEntry> result = new ArrayList<StaticInitEntry>();
+        List<ExprNode> elems = lit.elements();
+        if (destType.isArray()) {
+            Type elemType = destType.baseType();
+            long elemSize = elemType.allocSize();
+            for (int i = 0; i < elems.size(); i++) {
+                result.addAll(flattenStaticElement(elemType, elems.get(i),
+                        baseOffset + i * elemSize));
+            }
+        }
+        else if (destType.isStruct() || destType.isUnion()) {
+            destType.getCompositeType().size();  // force member offsets to be computed
+            List<Slot> members = destType.getCompositeType().members();
+            for (int i = 0; i < elems.size(); i++) {
+                Slot m = members.get(i);
+                result.addAll(flattenStaticElement(m.type(), elems.get(i),
+                        baseOffset + m.offset()));
+            }
+        }
+        else {
+            result.addAll(flattenStaticElement(destType, elems.get(0), baseOffset));
+        }
+        return result;
+    }
+
+    private List<StaticInitEntry> flattenStaticElement(Type elemType, ExprNode elemInit,
+            long offset) {
+        if (elemInit instanceof AggregateLiteralNode) {
+            return flattenStaticAggregate(elemType, (AggregateLiteralNode) elemInit, offset);
+        }
+        List<StaticInitEntry> result = new ArrayList<StaticInitEntry>();
+        Expr value = foldStaticConstant(elemInit);
+        if (value == null) {
+            errorHandler.error(elemInit.location(),
+                    "initializer element is not a compile-time constant");
+            value = new Int(asmType(elemType), 0);
+        }
+        result.add(new StaticInitEntry(offset, value));
+        return result;
+    }
+
+    /** Evaluates an AST expression to a constant IR literal (Int/Flo/Str)
+     *  at compile time, or returns null if it isn't one of the handful
+     *  of shapes this backend can fold without a real constant-folding
+     *  pass: a bare literal, a unary +/- of one, or a cast (as
+     *  TypeChecker's implicitCast may have inserted, e.g. an int literal
+     *  initializing a float array member) wrapping one, recursively. */
+    private Expr foldStaticConstant(ExprNode expr) {
+        if (expr instanceof IntegerLiteralNode
+                || expr instanceof FloatLiteralNode
+                || expr instanceof StringLiteralNode) {
+            return transformExpr(expr);
+        }
+        if (expr instanceof UnaryOpNode) {
+            UnaryOpNode u = (UnaryOpNode) expr;
+            if (u.operator().equals("+")) {
+                return foldStaticConstant(u.expr());
+            }
+            if (u.operator().equals("-")) {
+                Expr inner = foldStaticConstant(u.expr());
+                if (inner instanceof Int) {
+                    return new Int(((Int) inner).type(), - ((Int) inner).value());
+                }
+                if (inner instanceof Flo) {
+                    return new Flo(((Flo) inner).type(), - ((Flo) inner).value());
+                }
+            }
+            return null;
+        }
+        if (expr instanceof CastNode) {
+            CastNode cast = (CastNode) expr;
+            Expr inner = foldStaticConstant(cast.expr());
+            if (inner == null) return null;
+            net.loveruby.cflat.asm.Type dstT = asmType(cast.type());
+            if (inner instanceof Int) {
+                long v = ((Int) inner).value();
+                return cast.type().isFloat() ? new Flo(dstT, (double) v) : new Int(dstT, v);
+            }
+            if (inner instanceof Flo) {
+                double v = ((Flo) inner).value();
+                return cast.type().isFloat() ? new Flo(dstT, v) : new Int(dstT, (long) v);
+            }
+            return null;
+        }
+        return null;
     }
 
     //

@@ -65,6 +65,52 @@ docker run -t -i leungwensen/cbc-ubuntu-64bit
 cbc cbc-ubuntu-64bit/test/hello.cb
 ```
 
+## Language additions (both backends)
+
+A few C99 features have been added on top of the original cflat
+language, working identically on the x86 backend and the JVM backend
+described below:
+
+  * **`enum`**: `enum Color { RED, GREEN, BLUE = 10, YELLOW };` declares
+    each name as an `int` constant (auto-incrementing from 0, or from
+    right after an explicit value), and registers `Color`/`enum Color`
+    as a usable type name (an alias for `int` -- there's no separate
+    enum type at runtime, matching how little C itself guarantees about
+    an enum's representation). An enumerator's explicit value must
+    itself be a literal (or another constant expression this compiler
+    can fold) for auto-increment to keep working after it.
+  * **`switch` fallthrough**: a `case` clause no longer has to end in
+    `break` -- omitting it falls through into the next clause (including
+    into `default`), same as real C. `case 1: case 2: ...` (grouped
+    labels sharing one body) already worked before and still does.
+  * **Aggregate initializers**: `int[3] a = {1, 2, 3};`,
+    `struct point p = {1, 2};`, and nested forms like
+    `int[2][2] m = {{1,2},{3,4}};` or a struct member that's itself an
+    array/struct. Fewer initializers than elements/members zero-fills
+    the rest; a union initializer sets only its first member. Two scope
+    limits: the array's size must be given explicitly (inferring it from
+    the initializer list, like C's `int a[] = {1,2,3};`, isn't
+    supported), and there are no designated initializers (`.field = x`,
+    `[i] = x`) -- elements always map to array indices / struct members
+    in declaration order. A global (or `static` local)'s initializer
+    elements must be compile-time constants, same as plain C requires at
+    file scope; a non-static local's can be arbitrary runtime
+    expressions, lowered to ordinary element-by-element assignments run
+    where the declaration appears.
+  * **`const`/`volatile` qualifiers**: usable on local/global variables,
+    function parameters, struct/union members, casts and `sizeof`, in
+    any combination with pointers (`const char *s`, `const int x`, ...).
+    Assigning to (or `++`/`--` on) a const-qualified value is a compile
+    error. `volatile` only parses and propagates -- neither backend
+    reorders or caches memory accesses in a way it would need to
+    suppress. Not supported: qualifying a function's own return type or
+    a function pointer's parameter types, and qualifying a `typedef`'s
+    target type directly (`const MyInt x;` after a plain
+    `typedef int MyInt;` works fine, though). The original `const NAME =
+    value;` top-level constant form (used well before this, including by
+    `enum` above) still works exactly as before and takes priority when
+    both could otherwise apply.
+
 ## JVM backend (`-arch=jvm`)
 
 In addition to native x86 assembly, cbc can compile a cflat source file
