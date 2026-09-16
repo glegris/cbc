@@ -18,9 +18,9 @@ case "$CBC" in
     */*) CBC="$(cd "$(dirname "$CBC")" && pwd)/$(basename "$CBC")" ;;
 esac
 IMPORT="$DIR/../import"
-# Any program using putchar/puts/printf (or a StandardLibrary function
+# Any program using putchar/puts/printf (or a StandardRuntime function
 # via the extensible native-library mechanism) needs
-# net.loveruby.cflat.sysdep.jvm.runtime.StandardLibrary on its runtime
+# net.loveruby.cflat.sysdep.jvm.runtime.StandardRuntime on its runtime
 # classpath too, not just the compiler's own.
 CBC_CLASSES="$DIR/../build/classes"
 SCRATCH="$DIR/.jvmtest_out"
@@ -78,12 +78,12 @@ compile_case() {
     if [ $? -ne 0 ]; then
         return 1
     fi
-    # Every JVM-backend program now compiles alongside a NativeLibrary.class
-    # (it extends NativeLibrary directly -- see CodeGenerator's class doc),
+    # Every JVM-backend program now compiles alongside a NativeRuntime.class
+    # (it extends NativeRuntime directly -- see CodeGenerator's class doc),
     # so this can no longer just take the first *.class file: exclude it by
     # its fixed, hardcoded name to find the actual program class.
     local cls
-    cls=$(cd "$work" && ls -- *.class 2>/dev/null | grep -v '^NativeLibrary\.class$' | head -1)
+    cls=$(cd "$work" && ls -- *.class 2>/dev/null | grep -v '^NativeRuntime\.class$' | head -1)
     [ -n "$cls" ] || return 1
     echo "${cls%.class}"
 }

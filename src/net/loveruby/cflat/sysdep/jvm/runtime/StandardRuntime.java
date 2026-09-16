@@ -5,24 +5,26 @@ import java.util.Arrays;
 /**
  * Hand-written Java implementations of external functions callable from a
  * cflat program compiled with -arch=jvm, shared by every compiled program
- * (unlike NativeLibrary, generated fresh per program -- see its own
+ * (unlike NativeRuntime, generated fresh per program -- see its own
  * generated class doc). To make a function available everywhere without
  * regenerating anything, add a "public" instance method here.
  *
- * This is an ordinary object, constructed once per compiled program
- * (CodeGenerator's emitClinit stores the one instance in the generated
- * class's own "$lib" static field) and holding this program's whole
- * simulated address space as the "mem" field below -- so a method that
- * needs to read/write memory (strlen, strcpy, ...) just uses "mem"
- * directly, and one that doesn't (abs, toupper, ...) simply never
- * mentions it. A cflat pointer is a plain long byte-offset into mem; cast
- * it with (int) to index mem directly (a JVM array can't be larger than
- * 2^31 bytes anyway, so this never loses information for an address this
- * backend could have handed out).
+ * This class owns and allocates this program's whole simulated address
+ * space -- the "mem" field below -- itself: the compiled program class
+ * extends NativeRuntime, which extends this class directly (see
+ * CodeGenerator's own class doc), and its one instance, constructed once
+ * in the generated class's <clinit> and stored in its "$rt" static
+ * field, is what every read/write of simulated memory ultimately goes
+ * through. A method that needs to read/write memory (strlen, strcpy,
+ * ...) just uses "mem" directly, and one that doesn't (abs, toupper,
+ * ...) simply never mentions it. A cflat pointer is a plain long
+ * byte-offset into mem; cast it with (int) to index mem directly (a JVM
+ * array can't be larger than 2^31 bytes anyway, so this never loses
+ * information for an address this backend could have handed out).
  *
  * The generated program class itself stays fully static, exactly as
- * before this existed -- only calls *into* this library go through an
- * instance, via the one shared "$lib".
+ * before this existed -- only calls *into* this runtime go through an
+ * instance, via the one shared "$rt".
  *
  * Two call shapes exist, depending on how CodeGenerator reaches a method:
  *
@@ -39,17 +41,24 @@ import java.util.Arrays;
  *    int/enum/_Bool -> JVM int, long/pointer -> JVM long, float/double ->
  *    their JVM equivalents.
  *
- * CodeGenerator keeps its own STANDARD_LIBRARY_FUNCTIONS set of names
+ * CodeGenerator keeps its own STANDARD_RUNTIME_FUNCTIONS set of names
  * already implemented here (a plain hardcoded list of names, deliberately
  * not found by reflecting over this class -- see that field's own doc
- * comment for why) so it knows to skip generating a NativeLibrary stub for
+ * comment for why) so it knows to skip generating a NativeRuntime stub for
  * a name added here. Update that set too when adding a method.
  */
-public class StandardLibrary {
+public class StandardRuntime {
+    /** The compiled program's whole simulated address space, in bytes.
+     *  CodeGenerator reads this constant directly (a real Java compile-
+     *  time constant, inlined into CodeGenerator.class when it's built,
+     *  since both are compiled together -- see bin/build.sh) wherever it
+     *  needs to know the size, e.g. the stack pointer's initial value. */
+    public static final int HEAP_SIZE = 8 * 1024 * 1024;  // 8MB
+
     protected final byte[] mem;
 
-    public StandardLibrary(byte[] mem) {
-        this.mem = mem;
+    public StandardRuntime() {
+        this.mem = new byte[HEAP_SIZE];
     }
 
     //

@@ -150,34 +150,34 @@ public class Compiler {
             throw new SemanticException("compile failed.");
         }
         writeAssembly(destPath, asm);
-        writeNativeLibrarySource(destPath, asm);
+        writeNativeRuntimeSource(destPath, asm);
     }
 
-    /** JVM backend only: writes/updates "NativeLibrary.java" next to
-     *  destPath, then compiles it with javac so "NativeLibrary.class" is
-     *  ready to go alongside it (see CodeGenerator#nativeLibrarySource()
-     *  and NativeLibrary's own generated class doc for the overall
+    /** JVM backend only: writes/updates "NativeRuntime.java" next to
+     *  destPath, then compiles it with javac so "NativeRuntime.class" is
+     *  ready to go alongside it (see CodeGenerator#nativeRuntimeSource()
+     *  and NativeRuntime's own generated class doc for the overall
      *  mechanism). This is no longer optional the way it used to be:
-     *  the compiled program now extends NativeLibrary directly, so it
-     *  can't even be loaded without NativeLibrary.class present.  Never
-     *  overwrites an existing NativeLibrary.java -- a user's hand-written
+     *  the compiled program now extends NativeRuntime directly, so it
+     *  can't even be loaded without NativeRuntime.class present.  Never
+     *  overwrites an existing NativeRuntime.java -- a user's hand-written
      *  implementations in it must survive recompiling the .cb file --
      *  but does warn about any stub name the existing file doesn't seem
      *  to define, since otherwise a missing one only shows up as a
      *  NoSuchMethodError at run time; either way, it's (re)compiled with
      *  javac so edits take effect without a separate manual step. */
-    private void writeNativeLibrarySource(String destPath, AssemblyCode asm)
+    private void writeNativeRuntimeSource(String destPath, AssemblyCode asm)
             throws FileException {
         if (!(asm instanceof JVMAssemblyCode)) {
             return;
         }
         JVMAssemblyCode jvmAsm = (JVMAssemblyCode) asm;
-        String source = jvmAsm.nativeLibrarySource();
+        String source = jvmAsm.nativeRuntimeSource();
         if (source == null) {
             return;
         }
         File dir = new File(destPath).getAbsoluteFile().getParentFile();
-        File file = new File(dir, "NativeLibrary.java");
+        File file = new File(dir, "NativeRuntime.java");
         if (!file.exists()) {
             writeFile(file.getPath(), source);
             if (!jvmAsm.nativeStubNames().isEmpty()) {
@@ -207,18 +207,18 @@ public class Compiler {
                         + "file -- add these to it by hand)");
             }
         }
-        compileNativeLibrary(file);
+        compileNativeRuntime(file);
     }
 
-    /** Compiles NativeLibrary.java with javac, using this very process's
-     *  own classpath (which already has StandardLibrary.class on it,
+    /** Compiles NativeRuntime.java with javac, using this very process's
+     *  own classpath (which already has StandardRuntime.class on it,
      *  since cbc itself was built from the same source tree -- see
-     *  bin/build.sh) so it can resolve the "extends StandardLibrary".
+     *  bin/build.sh) so it can resolve the "extends StandardRuntime".
      *  Always safe to run unconditionally: freshly generated source
      *  compiles as-is (an unimplemented stub is valid Java, it just
      *  throws NotImplementedException), and re-running it after a user
      *  edit is exactly how those edits take effect. */
-    private void compileNativeLibrary(File file) throws FileException {
+    private void compileNativeRuntime(File file) throws FileException {
         String classpath = System.getProperty("java.class.path");
         Process proc;
         try {

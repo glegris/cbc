@@ -5,6 +5,7 @@ import net.loveruby.cflat.entity.*;
 import net.loveruby.cflat.ast.Location;
 import net.loveruby.cflat.utils.ErrorHandler;
 import net.loveruby.cflat.utils.NameUtils;
+import net.loveruby.cflat.sysdep.jvm.runtime.StandardRuntime;
 import org.objectweb.asm.ClassTooLargeException;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.MethodTooLargeException;
@@ -84,7 +85,11 @@ import static org.objectweb.asm.Opcodes.*;
  * and sizeof(T*) are 8 here versus 4 on the (32-bit-only) x86 backend.
  */
 public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
-    private static final int HEAP_SIZE = 8 * 1024 * 1024;  // 8MB simulated address space
+    // The simulated address space's size is StandardRuntime's own call
+    // now (it's the one that actually allocates "mem" -- see its own
+    // constructor): this just reads that same compile-time constant back
+    // rather than keeping a second, potentially-out-of-sync copy of it.
+    private static final int HEAP_SIZE = StandardRuntime.HEAP_SIZE;
     private static final int STATIC_BASE = 8;  // address 0 (NULL) is never a valid variable address
 
     private static final String MEM_FIELD = "$mem";
@@ -97,34 +102,34 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
     private static final String BUF_DESC = "Ljava/nio/ByteBuffer;";
     private static final String BUF_CLASS = "java/nio/ByteBuffer";
 
-    // See compileNativeCall()/nativeLibrarySource() and the class docs on
-    // NativeLibrary (generated) and StandardLibrary (hand-written, in
+    // See compileNativeCall()/nativeRuntimeSource() and the class docs on
+    // NativeRuntime (generated) and StandardRuntime (hand-written, in
     // net.loveruby.cflat.sysdep.jvm.runtime) for the extensible-library
     // mechanism these support. The compiled program's own class extends
-    // NativeLibrary (which extends StandardLibrary) directly, so every
-    // library method is inherited; LIB_FIELD nonetheless holds one
+    // NativeRuntime (which extends StandardRuntime) directly, so every
+    // library method is inherited; RT_FIELD nonetheless holds one
     // constructed instance of the compiled class itself (built once in
     // emitClinit, over $mem), since every call site that needs to invoke
     // an inherited method is a *static* cflat function with no "this" of
     // its own -- see compilePutchar/compilePuts/emitPrint*/
     // compileNativeCall.
-    private static final String NATIVE_LIBRARY_CLASS = "NativeLibrary";
-    private static final String STANDARD_LIBRARY_CLASS =
-            "net/loveruby/cflat/sysdep/jvm/runtime/StandardLibrary";
-    private static final String LIB_FIELD = "$lib";
+    private static final String NATIVE_RUNTIME_CLASS = "NativeRuntime";
+    private static final String STANDARD_RUNTIME_CLASS =
+            "net/loveruby/cflat/sysdep/jvm/runtime/StandardRuntime";
+    private static final String RT_FIELD = "$rt";
 
-    /** Names already implemented in StandardLibrary.java (excluding
+    /** Names already implemented in StandardRuntime.java (excluding
      *  putchar/puts/the printf primitives, which are compile-time
      *  intrinsics called directly, never through this name-based path
      *  -- see compileCallInto()), so compileNativeCall() doesn't
-     *  generate a NativeLibrary stub for them. Hardcoded rather than
+     *  generate a NativeRuntime stub for them. Hardcoded rather than
      *  found by reflecting over the actual class: this compiler
      *  shouldn't need that class loaded (or even built yet) just to
      *  decide what to generate, and a plain list is one line to read
      *  instead of a Class/Method-based lookup for something that
      *  changes rarely. Keep this in sync by hand whenever a method is
-     *  added to StandardLibrary. */
-    private static final Set<String> STANDARD_LIBRARY_FUNCTIONS = new HashSet<String>(Arrays.asList(
+     *  added to StandardRuntime. */
+    private static final Set<String> STANDARD_RUNTIME_FUNCTIONS = new HashSet<String>(Arrays.asList(
             // <ctype.h>
             "isdigit", "isalpha", "isalnum", "isspace", "isupper", "islower",
             "toupper", "tolower",
@@ -139,9 +144,9 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
 
     // name -> JVM method descriptor, for every external function called
     // that isn't a compile-time intrinsic (putchar/puts/printf) and isn't
-    // in STANDARD_LIBRARY_FUNCTIONS -- collected while compiling function
-    // bodies (see compileNativeCall()), then turned into a NativeLibrary
-    // stub for each of them by nativeLibrarySource(), included in the
+    // in STANDARD_RUNTIME_FUNCTIONS -- collected while compiling function
+    // bodies (see compileNativeCall()), then turned into a NativeRuntime
+    // stub for each of them by nativeRuntimeSource(), included in the
     // JVMAssemblyCode this backend returns.
     private final Map<String, String> nativeStubsNeeded = new TreeMap<String, String>();
 
@@ -167,32 +172,32 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         this.errorHandler = errorHandler;
     }
 
-    /** The descriptor for LIB_FIELD and for the receiver pushed by
-     *  pushLib(): the compiled class's own type, since it extends
-     *  NativeLibrary (which extends StandardLibrary) directly and
-     *  LIB_FIELD holds an instance of it -- see the class doc above. */
-    private String libDesc() {
+    /** The descriptor for RT_FIELD and for the receiver pushed by
+     *  pushRuntime(): the compiled class's own type, since it extends
+     *  NativeRuntime (which extends StandardRuntime) directly and
+     *  RT_FIELD holds an instance of it -- see the class doc above. */
+    private String runtimeDesc() {
         return "L" + className + ";";
     }
 
     /** ClassWriter.COMPUTE_FRAMES (needed since the class has real
      *  branches) reflectively loads any reference type it needs a
      *  common ancestor for, by default -- fine for a real, already
-     *  compiled class like StandardLibrary or java.lang.String, but
+     *  compiled class like StandardRuntime or java.lang.String, but
      *  className (this very class, mid-generation) and
-     *  NATIVE_LIBRARY_CLASS (source generated by nativeLibrarySource(),
+     *  NATIVE_RUNTIME_CLASS (source generated by nativeRuntimeSource(),
      *  not yet compiled at this point -- see Compiler#compile) don't
      *  exist as loadable classes yet. This walks our own known chain --
-     *  className extends NativeLibrary extends StandardLibrary --
+     *  className extends NativeRuntime extends StandardRuntime --
      *  by hand for those two, falling back to the reflective default
-     *  (which already handles StandardLibrary and any real JDK type
+     *  (which already handles StandardRuntime and any real JDK type
      *  correctly) for everything else. */
     private String commonSuperClass(String type1, String type2) {
         if (type1.equals(type2)) {
             return type1;
         }
-        if (!type1.equals(className) && !type1.equals(NATIVE_LIBRARY_CLASS)
-                && !type2.equals(className) && !type2.equals(NATIVE_LIBRARY_CLASS)) {
+        if (!type1.equals(className) && !type1.equals(NATIVE_RUNTIME_CLASS)
+                && !type2.equals(className) && !type2.equals(NATIVE_RUNTIME_CLASS)) {
             return null;  // neither is ours -- let the reflective default handle it
         }
         List<String> chain2 = ancestorChain(type2);
@@ -210,16 +215,16 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         while (t != null) {
             chain.add(t);
             if (t.equals(className)) {
-                t = NATIVE_LIBRARY_CLASS;
+                t = NATIVE_RUNTIME_CLASS;
             }
-            else if (t.equals(NATIVE_LIBRARY_CLASS)) {
-                t = STANDARD_LIBRARY_CLASS;
+            else if (t.equals(NATIVE_RUNTIME_CLASS)) {
+                t = STANDARD_RUNTIME_CLASS;
             }
             else if (t.equals("java/lang/Object")) {
                 t = null;
             }
             else {
-                // A real, already-compiled class (StandardLibrary, at
+                // A real, already-compiled class (StandardRuntime, at
                 // this point in the chain) -- walk the rest of the way
                 // reflectively, exactly like ASM's own default does.
                 try {
@@ -247,12 +252,12 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                 return (result != null) ? result : super.getCommonSuperClass(type1, type2);
             }
         };
-        cw.visit(V1_8, ACC_PUBLIC | ACC_SUPER, className, null, NATIVE_LIBRARY_CLASS, null);
+        cw.visit(V1_8, ACC_PUBLIC | ACC_SUPER, className, null, NATIVE_RUNTIME_CLASS, null);
         cw.visitField(ACC_PRIVATE | ACC_STATIC, MEM_FIELD, "[B", null, null).visitEnd();
         cw.visitField(ACC_PRIVATE | ACC_STATIC, BUF_FIELD, BUF_DESC, null, null).visitEnd();
         cw.visitField(ACC_PRIVATE | ACC_STATIC, SP_FIELD, "J", null, null).visitEnd();
         cw.visitField(ACC_PRIVATE | ACC_STATIC, HP_FIELD, "J", null, null).visitEnd();
-        cw.visitField(ACC_PRIVATE | ACC_STATIC, LIB_FIELD, libDesc(), null, null).visitEnd();
+        cw.visitField(ACC_PRIVATE | ACC_STATIC, RT_FIELD, runtimeDesc(), null, null).visitEnd();
 
         emitConstructor();
         emitAllocHelper();
@@ -281,7 +286,7 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         }
         try {
             return new JVMAssemblyCode(className, cw.toByteArray(),
-                    nativeLibrarySource(), nativeStubsNeeded.keySet());
+                    nativeRuntimeSource(), nativeStubsNeeded.keySet());
         }
         catch (MethodTooLargeException ex) {
             // The JVM class file format's own limit -- a method's Code
@@ -357,35 +362,48 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         return (dot > 0) ? name.substring(0, dot) : name;
     }
 
-    /** The compiled class extends NativeLibrary (see the class doc
-     *  above), which has no no-arg constructor -- only
-     *  NativeLibrary(byte[] mem), inherited from StandardLibrary. This
-     *  emits the one constructor the compiled class needs to satisfy
-     *  that, taking no arguments itself (there being nothing for a
-     *  caller to pass in) and forwarding $mem, already allocated by
-     *  <clinit> by the time this ever runs (see emitClinit). */
+    /** The compiled class extends NativeRuntime (see the class doc
+     *  above). Every JVM class needs its own explicit <init> -- there's
+     *  no way to just omit one and inherit NativeRuntime's -- but since
+     *  StandardRuntime now allocates "mem" itself (see its own
+     *  constructor), there's nothing left to forward: this is a plain
+     *  pass-through to NativeRuntime's own no-arg constructor. */
     private void emitConstructor() {
         MethodVisitor mv = cw.visitMethod(ACC_PRIVATE, "<init>", "()V", null, null);
         mv.visitCode();
         mv.visitVarInsn(ALOAD, 0);
-        mv.visitFieldInsn(GETSTATIC, className, MEM_FIELD, "[B");
-        mv.visitMethodInsn(INVOKESPECIAL, NATIVE_LIBRARY_CLASS, "<init>", "([B)V", false);
+        mv.visitMethodInsn(INVOKESPECIAL, NATIVE_RUNTIME_CLASS, "<init>", "()V", false);
         mv.visitInsn(RETURN);
         mv.visitMaxs(0, 0);
         mv.visitEnd();
     }
 
     //
-    // <clinit>: set up $mem/$buf, populate string literals, run global
-    // variable initializers, then initialize the stack/heap pointers.
+    // <clinit>: construct the shared runtime instance (which allocates
+    // $mem), set up $buf, populate string literals, run global variable
+    // initializers, then initialize the stack/heap pointers.
     //
 
     private void emitClinit(IR ir) {
         MethodVisitor mv = cw.visitMethod(ACC_STATIC, "<clinit>", "()V", null, null);
         mv.visitCode();
 
-        mv.visitLdcInsn(HEAP_SIZE);
-        mv.visitIntInsn(NEWARRAY, T_BYTE);
+        // The one shared instance of this very class -- extending
+        // NativeRuntime/StandardRuntime -- that every putchar/puts/
+        // printf and extensible-native-call goes through (see
+        // compilePutchar/compilePuts/emitPrint*/compileNativeCall),
+        // since those are static cflat functions with no "this" of
+        // their own to call an inherited method on. Constructing it is
+        // also what allocates the simulated address space:
+        // StandardRuntime's own constructor does `new byte[HEAP_SIZE]`,
+        // so $mem below is just read back off the new instance, not
+        // allocated directly here.
+        mv.visitTypeInsn(NEW, className);
+        mv.visitInsn(DUP);
+        mv.visitMethodInsn(INVOKESPECIAL, className, "<init>", "()V", false);
+        mv.visitInsn(DUP);
+        mv.visitFieldInsn(PUTSTATIC, className, RT_FIELD, runtimeDesc());
+        mv.visitFieldInsn(GETFIELD, STANDARD_RUNTIME_CLASS, "mem", "[B");
         mv.visitFieldInsn(PUTSTATIC, className, MEM_FIELD, "[B");
 
         mv.visitFieldInsn(GETSTATIC, className, MEM_FIELD, "[B");
@@ -394,19 +412,6 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         mv.visitMethodInsn(INVOKEVIRTUAL, BUF_CLASS, "order",
                 "(Ljava/nio/ByteOrder;)" + BUF_DESC, false);
         mv.visitFieldInsn(PUTSTATIC, className, BUF_FIELD, BUF_DESC);
-
-        // The one shared instance of this very class -- extending
-        // NativeLibrary/StandardLibrary -- that every putchar/puts/
-        // printf and extensible-native-library call goes through (see
-        // compilePutchar/compilePuts/emitPrint*/compileNativeCall),
-        // since those are static cflat functions with no "this" of
-        // their own to call an inherited method on. emitConstructor()
-        // forwards $mem, already set a few lines above, to
-        // NativeLibrary's own constructor.
-        mv.visitTypeInsn(NEW, className);
-        mv.visitInsn(DUP);
-        mv.visitMethodInsn(INVOKESPECIAL, className, "<init>", "()V", false);
-        mv.visitFieldInsn(PUTSTATIC, className, LIB_FIELD, libDesc());
 
         for (ConstantEntry ent : stringLiteralsInOrder) {
             emitStaticBytesInit(mv, stringAddr.get(ent), encodeCString(ent.value()));
@@ -714,42 +719,39 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
     }
 
     //
-    // NativeLibrary.java generation -- see compileNativeCall() (in
+    // NativeRuntime.java generation -- see compileNativeCall() (in
     // FunctionCompiler) for where nativeStubsNeeded gets populated, and
-    // the class docs on NativeLibrary (generated) and StandardLibrary
+    // the class docs on NativeRuntime (generated) and StandardRuntime
     // (hand-written, net.loveruby.cflat.sysdep.jvm.runtime) for the
     // overall mechanism.
     //
 
-    /** Source for a "NativeLibrary.java" to write alongside the class
+    /** Source for a "NativeRuntime.java" to write alongside the class
      *  file: one stub per name in nativeStubsNeeded, throwing
      *  NotImplementedException. Unlike before this class inherited
-     *  directly from NativeLibrary, this is never null: the compiled
-     *  class extends NATIVE_LIBRARY_CLASS unconditionally (see
+     *  directly from NativeRuntime, this is never null: the compiled
+     *  class extends NATIVE_RUNTIME_CLASS unconditionally (see
      *  generate()), so the file -- possibly with zero stubs, just the
-     *  "extends StandardLibrary" boilerplate -- must always exist for
-     *  the class to even load. Compiler#writeNativeLibrarySource is what
+     *  "extends StandardRuntime" boilerplate -- must always exist for
+     *  the class to even load. Compiler#writeNativeRuntimeSource is what
      *  actually compiles it with javac after writing/checking it. */
-    String nativeLibrarySource() {
+    String nativeRuntimeSource() {
         StringBuilder sb = new StringBuilder();
         sb.append("// Generated by cbc for \"").append(className).append("\" -- edit freely.\n");
         sb.append("// \"").append(className).append("\" extends this class directly (which\n");
-        sb.append("// extends StandardLibrary in turn), so every method here -- inherited\n");
+        sb.append("// extends StandardRuntime in turn), so every method here -- inherited\n");
         sb.append("// or added by hand -- is callable from the compiled program.\n");
         sb.append("// Implement whichever of the stubs below (if any) your program\n");
         sb.append("// actually calls; re-running cbc never overwrites this file once it\n");
-        sb.append("// exists (see Compiler#writeNativeLibrarySource), so edits are\n");
+        sb.append("// exists (see Compiler#writeNativeRuntimeSource), so edits are\n");
         sb.append("// always safe, and cbc recompiles it with javac after every run.\n");
-        sb.append("// \"mem\" (inherited from StandardLibrary) is this program's whole\n");
+        sb.append("// \"mem\" (inherited from StandardRuntime) is this program's whole\n");
         sb.append("// simulated address space, if your implementation needs to read/write\n");
         sb.append("// memory directly -- every cflat pointer is a byte offset into it.\n");
         sb.append("import net.loveruby.cflat.sysdep.jvm.runtime.NotImplementedException;\n");
-        sb.append("import net.loveruby.cflat.sysdep.jvm.runtime.StandardLibrary;\n\n");
-        sb.append("public class ").append(NATIVE_LIBRARY_CLASS)
-                .append(" extends StandardLibrary {\n");
-        sb.append("    public ").append(NATIVE_LIBRARY_CLASS).append("(byte[] mem) {\n");
-        sb.append("        super(mem);\n");
-        sb.append("    }\n\n");
+        sb.append("import net.loveruby.cflat.sysdep.jvm.runtime.StandardRuntime;\n\n");
+        sb.append("public class ").append(NATIVE_RUNTIME_CLASS)
+                .append(" extends StandardRuntime {\n");
         for (Map.Entry<String, String> stub : nativeStubsNeeded.entrySet()) {
             sb.append(nativeStubMethodSource(stub.getKey(), stub.getValue()));
         }
@@ -2113,26 +2115,26 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
 
         /** Any external function other than the three compile-time
          *  intrinsics above: a name already implemented in
-         *  StandardLibrary is inherited (through NativeLibrary) by the
-         *  compiled class itself, and so is any stub NativeLibrary.java
+         *  StandardRuntime is inherited (through NativeRuntime) by the
+         *  compiled class itself, and so is any stub NativeRuntime.java
          *  gets for a name that isn't (see
-         *  CodeGenerator#nativeLibrarySource()) -- a stub not yet
+         *  CodeGenerator#nativeRuntimeSource()) -- a stub not yet
          *  implemented by hand throws NotImplementedException at
          *  runtime (compiling and running the rest of the program still
          *  works, as long as this particular call is never reached).
          *  Either way the call target is an inherited instance method,
-         *  so both go through the one shared instance in LIB_FIELD (see
-         *  pushLib()) exactly alike; only the declaring class named in
+         *  so both go through the one shared instance in RT_FIELD (see
+         *  pushRuntime()) exactly alike; only the declaring class named in
          *  the INVOKEVIRTUAL differs, since that's where the JVM looks
          *  first to resolve it. */
         private void compileNativeCall(Call node, UndefinedFunction f, Expr destAddrExpr) {
             String name = f.name();
-            boolean inStandardLibrary = STANDARD_LIBRARY_FUNCTIONS.contains(name);
+            boolean inStandardRuntime = STANDARD_RUNTIME_FUNCTIONS.contains(name);
             String desc = methodDescriptor(f);
-            if (!inStandardLibrary) {
+            if (!inStandardRuntime) {
                 nativeStubsNeeded.put(name, desc);
             }
-            pushLib();
+            pushRuntime();
             for (Expr arg : node.args()) {
                 compileArg(arg);
             }
@@ -2140,7 +2142,7 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                 pushAggregateDest(destAddrExpr, f.returnType().size());
             }
             mv.visitMethodInsn(INVOKEVIRTUAL,
-                    inStandardLibrary ? STANDARD_LIBRARY_CLASS : NATIVE_LIBRARY_CLASS,
+                    inStandardRuntime ? STANDARD_RUNTIME_CLASS : NATIVE_RUNTIME_CLASS,
                     name, desc, false);
         }
 
@@ -2234,26 +2236,26 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                     "(J)Ljava/lang/String;", false);
         }
 
-        /** Pushes the shared instance held in LIB_FIELD (see emitClinit)
+        /** Pushes the shared instance held in RT_FIELD (see emitClinit)
          *  as the receiver for one of the INVOKEVIRTUAL calls below --
          *  always the first thing pushed, before any argument. */
-        private void pushLib() {
-            mv.visitFieldInsn(GETSTATIC, className, LIB_FIELD, libDesc());
+        private void pushRuntime() {
+            mv.visitFieldInsn(GETSTATIC, className, RT_FIELD, runtimeDesc());
         }
 
         private void compilePutchar(Call node) {
-            pushLib();
+            pushRuntime();
             Expr arg = node.args().get(0);
             compile(arg);
             coerceToInt(resultWidth(arg));
-            mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_LIBRARY_CLASS,
+            mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_RUNTIME_CLASS,
                     "putchar", "(I)I", false);
         }
 
         private void compilePuts(Call node) {
-            pushLib();
+            pushRuntime();
             compileCString(node.args().get(0));
-            mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_LIBRARY_CLASS,
+            mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_RUNTIME_CLASS,
                     "puts", "(Ljava/lang/String;)I", false);
         }
 
@@ -2320,9 +2322,9 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
 
         private void flushLiteral(StringBuilder sb) {
             if (sb.length() > 0) {
-                pushLib();
+                pushRuntime();
                 mv.visitLdcInsn(sb.toString());
-                mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_LIBRARY_CLASS,
+                mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_RUNTIME_CLASS,
                         "printLiteral", "(Ljava/lang/String;)V", false);
                 sb.setLength(0);
             }
@@ -2333,14 +2335,14 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                 error("not enough arguments for printf format");
                 return idx;
             }
-            pushLib();
+            pushRuntime();
             Expr arg = args.get(idx);
             compile(arg);
             boolean wide = isWide(resultWidth(arg));
             String name = unsigned
                     ? (wide ? "printUnsignedLong" : "printUnsignedInt")
                     : (wide ? "printLong" : "printInt");
-            mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_LIBRARY_CLASS, name,
+            mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_RUNTIME_CLASS, name,
                     wide ? "(J)V" : "(I)V", false);
             return idx + 1;
         }
@@ -2350,12 +2352,12 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                 error("not enough arguments for printf format");
                 return idx;
             }
-            pushLib();
+            pushRuntime();
             Expr arg = args.get(idx);
             compile(arg);
             coerceToInt(resultWidth(arg));
             mv.visitInsn(I2C);
-            mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_LIBRARY_CLASS,
+            mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_RUNTIME_CLASS,
                     "printChar", "(C)V", false);
             return idx + 1;
         }
@@ -2365,9 +2367,9 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                 error("not enough arguments for printf format");
                 return idx;
             }
-            pushLib();
+            pushRuntime();
             compileCString(args.get(idx));
-            mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_LIBRARY_CLASS,
+            mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_RUNTIME_CLASS,
                     "printString", "(Ljava/lang/String;)V", false);
             return idx + 1;
         }
@@ -2382,11 +2384,11 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                 error("not enough arguments for printf format");
                 return idx;
             }
-            pushLib();
+            pushRuntime();
             Expr arg = args.get(idx);
             compile(arg);
             coerceWidth(resultWidth(arg), net.loveruby.cflat.asm.Type.FLOAT64);
-            mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_LIBRARY_CLASS,
+            mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_RUNTIME_CLASS,
                     "printDouble", "(D)V", false);
             return idx + 1;
         }

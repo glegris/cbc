@@ -13,24 +13,24 @@ import java.util.Set;
 public class JVMAssemblyCode implements BinaryAssemblyCode {
     private final String className;
     private final byte[] bytes;
-    private final String nativeLibrarySource;
+    private final String nativeRuntimeSource;
     private final Set<String> nativeStubNames;
 
     public JVMAssemblyCode(String className, byte[] bytes) {
         this(className, bytes, null, Collections.<String>emptySet());
     }
 
-    /** nativeLibrarySource is the source of a "NativeLibrary.java" to
+    /** nativeRuntimeSource is the source of a "NativeRuntime.java" to
      *  write alongside the class file (null if the program called no
      *  external function needing one, the common case); nativeStubNames
      *  is exactly the set of names it stubs out -- see
-     *  CodeGenerator#nativeLibrarySource() and NativeLibrary's own
+     *  CodeGenerator#nativeRuntimeSource() and NativeRuntime's own
      *  generated class doc for what these are for. */
-    public JVMAssemblyCode(String className, byte[] bytes, String nativeLibrarySource,
+    public JVMAssemblyCode(String className, byte[] bytes, String nativeRuntimeSource,
             Set<String> nativeStubNames) {
         this.className = className;
         this.bytes = bytes;
-        this.nativeLibrarySource = nativeLibrarySource;
+        this.nativeRuntimeSource = nativeRuntimeSource;
         this.nativeStubNames = nativeStubNames;
     }
 
@@ -38,8 +38,8 @@ public class JVMAssemblyCode implements BinaryAssemblyCode {
         return bytes;
     }
 
-    public String nativeLibrarySource() {
-        return nativeLibrarySource;
+    public String nativeRuntimeSource() {
+        return nativeRuntimeSource;
     }
 
     public Set<String> nativeStubNames() {
