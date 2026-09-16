@@ -98,8 +98,8 @@ an environment that only has a JDK and no x86 toolchain at all. A fixed
 set of tests are reported as `KNOWN-DIFF` rather than pass/fail, for
 reasons that are architectural rather than bugs (see the JVM backend
 section below for the underlying cause in each case): `usertype`,
-`addressof`, `ptrdiff`, `sizeof-type`, `sizeof-expr`, `implicitaddr`,
-`funcptr`, `gvar`, `assign`, `varargs`.
+`ptrdiff`, `sizeof-type`, `sizeof-expr`, `implicitaddr`, `funcptr`,
+`gvar`, `varargs`.
 
 ## Language additions (both backends)
 
@@ -312,13 +312,22 @@ library. There is no separate assemble/link step for this target: the
 
 ```shell
 cbc -arch=jvm test/add.cb
-java add
+java -cp .:path/to/build/classes add
 ```
 
 (`--target=jvm` is accepted as a longer alias for `-arch=jvm`.) The
 produced class is named after the source file, sanitized into a valid
 Java identifier (e.g. `while-break.cb` becomes class `while_break`), so
 that the file name and the class name it contains always match.
+
+The `build/classes` half of that classpath (wherever `bin/build.sh`
+put it, or the equivalent for however cbc itself was built) is needed by
+*running* the program, not just compiling it, as soon as it calls
+`printf`/`putchar`/`puts` or any function handled by the extensible
+native-library mechanism below -- both compile to calls into
+`net.loveruby.cflat.sysdep.jvm.runtime.StandardLibrary`, a class that
+ships with cbc itself rather than being folded into every compiled
+program's own `.class` file.
 
 This backend supports essentially all of core cflat, including a real
 C-style address space:
@@ -371,13 +380,11 @@ C-style address space:
     `L`-suffixed floating constant is just a `double`).
 
 Remaining gaps: `putchar(int)`, `puts(char*)` and `printf(char*, ...)` are
-compile-time intrinsics translated directly to real JVM calls (`printf`'s
-format string itself must still be a compile-time literal, though
-`puts`/`%s` accept any `char*` expression, not just literals) -- these
-three have no real address, so `&putchar` and friends are rejected. Any
-*other* external function (declared but not defined in the same source
-file) is handled by the extensible native-library mechanism below rather
-than being flatly rejected. Lastly, `long` and every pointer type are real
+compile-time intrinsics (`printf`'s format string itself must still be a
+compile-time literal, though `puts`/`%s` accept any `char*` expression,
+not just literals) that compile to calls into `StandardLibrary` (below)
+just like anything else, but have no real address, so `&putchar` and
+friends are rejected. Lastly, `long` and every pointer type are real
 8-byte JVM `long`s here (see the class comment on
 `sysdep/jvm/CodeGenerator.java`), so `sizeof(long)`/`sizeof(T*)` are 8,
 not 4 like on the (32-bit-only) x86 backend.
@@ -385,26 +392,40 @@ not 4 like on the (32-bit-only) x86 backend.
 ### Calling external functions: StandardLibrary and NativeLibrary
 
 A call to a function declared (e.g. via `import`) but not defined in the
-same file -- anything other than the three intrinsics above -- compiles to
-a call to `NativeLibrary`, a small, human-readable `NativeLibrary.java`
-that `cbc` generates *as source*, next to the `.class` file, alongside the
+same file -- anything other than `putchar`/`puts`/`printf`, which the
+compiler already knows about directly -- compiles to a call to
+`NativeLibrary`, a small, human-readable `NativeLibrary.java` that `cbc`
+generates *as source*, next to the `.class` file, alongside the
 hand-written `net.loveruby.cflat.sysdep.jvm.runtime.StandardLibrary`:
 
   * **`StandardLibrary`** is checked into cbc itself and shared by every
-    compiled program. Add a `public static` method there (matching the
-    JVM parameter/return types `CodeGenerator#buildDescriptor` maps a
-    cflat signature to: `int`/`long`/`float`/`double`) to make a function
-    available everywhere without regenerating anything.
+    compiled program, and already implements a useful chunk of libc:
+    `<ctype.h>` (`isdigit`, `isalpha`, `isalnum`, `isspace`, `isupper`,
+    `islower`, `toupper`, `tolower`), `<string.h>` (`strlen`, `strcpy`,
+    `strncpy`, `strcat`, `strncat`, `strcmp`, `strncmp`, `strchr`,
+    `memcpy`, `memmove`, `memset`, `memcmp`), and `<stdlib.h>`'s numeric
+    conversions (`abs`, `labs`, `atoi`, `atol`, `atof`) -- all operating
+    on memory the caller already owns, since this backend has no
+    general-purpose `malloc`/`free` exposed to cflat code yet. Add a
+    `public static` method there to make another function available to
+    every compiled program without regenerating anything: its first
+    parameter is always `byte[] mem` (this program's whole simulated
+    address space -- a cflat pointer is a plain `long` byte offset into
+    it, cast with `(int)` to index it directly), even if the
+    implementation doesn't need it (uniform and simple beats deciding
+    per function whether to include it), followed by the cflat
+    parameters/return type mapped the way `CodeGenerator#buildDescriptor`
+    always maps them: `int`/`long`/`float`/`double`.
   * **`NativeLibrary`** is generated fresh per program, `extends
     StandardLibrary`, and contains one stub -- throwing
     `NotImplementedException` -- for each external function the program
     calls that isn't already in `StandardLibrary` (checked by a plain
     hardcoded name list in `CodeGenerator`, not reflection, so generating
-    it never needs `StandardLibrary` itself loaded or even built). Since
-    it extends `StandardLibrary`, the compiled program's `INVOKESTATIC
-    NativeLibrary.foo(...)` resolves correctly either way, without the
-    compiler needing to know which of the two classes actually
-    implements `foo`.
+    it never needs `StandardLibrary` itself loaded or even built). A name
+    already in `StandardLibrary` is called there directly; anything else
+    is called through `NativeLibrary` -- which, since it extends
+    `StandardLibrary`, still resolves correctly either way once
+    implemented.
 
 Compiling a program that calls such a function always succeeds; only
 actually *calling* an unimplemented one fails, at run time, with

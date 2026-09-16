@@ -18,6 +18,11 @@ case "$CBC" in
     */*) CBC="$(cd "$(dirname "$CBC")" && pwd)/$(basename "$CBC")" ;;
 esac
 IMPORT="$DIR/../import"
+# Any program using putchar/puts/printf (or a StandardLibrary function
+# via the extensible native-library mechanism) needs
+# net.loveruby.cflat.sysdep.jvm.runtime.StandardLibrary on its runtime
+# classpath too, not just the compiler's own.
+CBC_CLASSES="$DIR/../build/classes"
 SCRATCH="$DIR/.jvmtest_out"
 rm -rf "$SCRATCH"
 mkdir -p "$SCRATCH"
@@ -35,14 +40,12 @@ known=0
 # are documented in README.md's "JVM backend" section.
 declare -A KNOWN_DIFF=(
     [usertype]="&puts is rejected: intrinsics have no real address on the JVM backend"
-    [addressof]="strcpy() is an external function, not supported by the JVM backend"
     [ptrdiff]="pointers are 8-byte JVM longs here, not 4-byte like x86, so pointer arithmetic differs"
     [sizeof-type]="sizeof(long)/sizeof(T*) is 8 on the JVM backend, not 4 like x86"
     [sizeof-expr]="sizeof(long)/sizeof(T*) is 8 on the JVM backend, not 4 like x86"
     [implicitaddr]="&printf is rejected: intrinsics have no real address on the JVM backend"
     [funcptr]="&printf is rejected: intrinsics have no real address on the JVM backend"
     [gvar]="taking the address of libc's stdin is not supported by the JVM backend"
-    [assign]="memcpy() is an external function, not supported by the JVM backend"
     [varargs]="variadic functions are not supported by the JVM backend"
 )
 
@@ -90,7 +93,7 @@ run_case() {
         return
     fi
     local actual
-    actual=$(cd "$SCRATCH/$name" && java -cp . "$jname" "$@" 2>run.err)
+    actual=$(cd "$SCRATCH/$name" && java -cp .:"$CBC_CLASSES" "$jname" "$@" 2>run.err)
     if [ "$actual" = "$expected" ]; then
         report OK "$name"
     else
@@ -106,7 +109,7 @@ run_exit0() {
         report FAIL "$name" "$(grep -v 'Picked up' "$SCRATCH/$name/compile.err" | head -1)"
         return
     fi
-    ( cd "$SCRATCH/$name" && java -cp . "$jname" >run.out 2>run.err )
+    ( cd "$SCRATCH/$name" && java -cp .:"$CBC_CLASSES" "$jname" >run.out 2>run.err )
     local st=$?
     if [ $st -eq 0 ]; then
         report OK "$name"
