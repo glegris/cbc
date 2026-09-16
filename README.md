@@ -65,6 +65,42 @@ docker run -t -i leungwensen/cbc-ubuntu-64bit
 cbc cbc-ubuntu-64bit/test/hello.cb
 ```
 
+## Command-line build & test scripts
+
+For working on cbc itself without going through `ant` (which needs
+`build.properties`'s `javacc.dir` to already point at a real
+`javacc.jar`), three scripts under `bin/` cover the usual edit/build/test
+loop:
+
+```shell
+bin/build.sh   # compiles src/ into build/classes; regenerates the parser
+               # from Parser.jj first if a javacc.jar can be found (set
+               # $JAVACC_JAR to point at one), otherwise just recompiles
+               # the parser sources already checked into the repo
+bin/cbc ...    # runs the compiler just built, same CLI as an installed
+               # cbc (test/test_cbc.sh and test/Makefile already expect
+               # this exact path)
+bin/test.sh    # builds, then runs both test suites below
+```
+
+`bin/test.sh` runs `test/run_jvm.sh` (see below) and then the original
+native x86 suite (`test/test_cbc.sh`, via `test/run.sh`) -- but only the
+latter if this machine actually has the 32-bit runtime objects
+`GNULinker.java` needs to link a real x86 executable (`crt1.o`, the
+32-bit dynamic linker, etc; see "Installation dependencies" above). On a
+machine without the multilib packages installed, that suite is reported
+as skipped rather than failed, since there's nothing wrong with the
+compiler in that case.
+
+`test/run_jvm.sh` is a from-scratch port of the same `test/*.cb` files to
+the JVM backend (`-arch=jvm`), and is the main way to test cbc itself in
+an environment that only has a JDK and no x86 toolchain at all. A fixed
+set of tests are reported as `KNOWN-DIFF` rather than pass/fail, for
+reasons that are architectural rather than bugs (see the JVM backend
+section below for the underlying cause in each case): `usertype`,
+`addressof`, `ptrdiff`, `sizeof-type`, `sizeof-expr`, `implicitaddr`,
+`funcptr`, `gvar`, `assign`, `varargs`.
+
 ## Language additions (both backends)
 
 A few C99 features have been added on top of the original cflat
