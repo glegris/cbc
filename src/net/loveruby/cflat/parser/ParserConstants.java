@@ -53,47 +53,53 @@ public interface ParserConstants {
   /** RegularExpression Id. */
   int INLINE = 23;
   /** RegularExpression Id. */
-  int IF = 24;
+  int RESTRICT = 24;
   /** RegularExpression Id. */
-  int ELSE = 25;
+  int IF = 25;
   /** RegularExpression Id. */
-  int SWITCH = 26;
+  int ELSE = 26;
   /** RegularExpression Id. */
-  int CASE = 27;
+  int SWITCH = 27;
   /** RegularExpression Id. */
-  int DEFAULT_ = 28;
+  int CASE = 28;
   /** RegularExpression Id. */
-  int WHILE = 29;
+  int DEFAULT_ = 29;
   /** RegularExpression Id. */
-  int DO = 30;
+  int WHILE = 30;
   /** RegularExpression Id. */
-  int FOR = 31;
+  int DO = 31;
   /** RegularExpression Id. */
-  int RETURN = 32;
+  int FOR = 32;
   /** RegularExpression Id. */
-  int BREAK = 33;
+  int RETURN = 33;
   /** RegularExpression Id. */
-  int CONTINUE = 34;
+  int BREAK = 34;
   /** RegularExpression Id. */
-  int GOTO = 35;
+  int CONTINUE = 35;
   /** RegularExpression Id. */
-  int TYPEDEF = 36;
+  int GOTO = 36;
   /** RegularExpression Id. */
-  int IMPORT = 37;
+  int TYPEDEF = 37;
   /** RegularExpression Id. */
-  int SIZEOF = 38;
+  int IMPORT = 38;
   /** RegularExpression Id. */
-  int IDENTIFIER = 39;
+  int SIZEOF = 39;
   /** RegularExpression Id. */
-  int INTEGER = 40;
+  int IDENTIFIER = 40;
   /** RegularExpression Id. */
-  int FLOATLIT = 41;
+  int INTEGER = 41;
   /** RegularExpression Id. */
-  int EXPONENT = 42;
+  int INTSUFFIX = 42;
   /** RegularExpression Id. */
-  int CHARACTER = 47;
+  int FLOATLIT = 43;
   /** RegularExpression Id. */
-  int STRING = 52;
+  int EXPONENT = 44;
+  /** RegularExpression Id. */
+  int HEXEXPONENT = 45;
+  /** RegularExpression Id. */
+  int CHARACTER = 50;
+  /** RegularExpression Id. */
+  int STRING = 55;
 
   /** Lexical state. */
   int DEFAULT = 0;
@@ -132,6 +138,7 @@ public interface ParserConstants {
     "\"unsigned\"",
     "\"_Bool\"",
     "\"inline\"",
+    "\"restrict\"",
     "\"if\"",
     "\"else\"",
     "\"switch\"",
@@ -149,17 +156,19 @@ public interface ParserConstants {
     "\"sizeof\"",
     "<IDENTIFIER>",
     "<INTEGER>",
+    "<INTSUFFIX>",
     "<FLOATLIT>",
     "<EXPONENT>",
+    "<HEXEXPONENT>",
     "\"\\\'\"",
-    "<token of kind 44>",
-    "<token of kind 45>",
-    "<token of kind 46>",
+    "<token of kind 47>",
+    "<token of kind 48>",
+    "<token of kind 49>",
     "\"\\\'\"",
     "\"\\\"\"",
-    "<token of kind 49>",
-    "<token of kind 50>",
-    "<token of kind 51>",
+    "<token of kind 52>",
+    "<token of kind 53>",
+    "<token of kind 54>",
     "\"\\\"\"",
     "\"(\"",
     "\".\"",

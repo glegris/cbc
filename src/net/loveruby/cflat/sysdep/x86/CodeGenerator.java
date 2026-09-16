@@ -461,6 +461,13 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator,
                             + func.returnType());
             return;
         }
+        if (isWideInteger(func.returnType())) {
+            errorHandler.error(func.location(),
+                    "64-bit integer return types are not supported by the x86 "
+                            + "backend yet (the JVM backend, -arch=jvm, supports them): "
+                            + func.returnType());
+            return;
+        }
         for (CBCParameter param : func.parameters()) {
             if (isAggregate(param.type())) {
                 errorHandler.error(param.location(),
@@ -472,6 +479,13 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator,
             if (param.type().isFloat()) {
                 errorHandler.error(param.location(),
                         "floating-point parameters are not supported by the x86 "
+                                + "backend yet (the JVM backend, -arch=jvm, supports them): "
+                                + param.type());
+                return;
+            }
+            if (isWideInteger(param.type())) {
+                errorHandler.error(param.location(),
+                        "64-bit integer parameters are not supported by the x86 "
                                 + "backend yet (the JVM backend, -arch=jvm, supports them): "
                                 + param.type());
                 return;
@@ -757,6 +771,24 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator,
         return t.isStruct() || t.isUnion();
     }
 
+    /** "long long"/"unsigned long long" are always (at least) 64 bits
+     *  per C99, regardless of "long"'s own width on this platform (4
+     *  bytes here, unlike the JVM backend's 8) -- this backend has no
+     *  multi-register/carry-chain integer arithmetic to actually back a
+     *  width wider than a single 32-bit register, so (like float/double)
+     *  it rejects the type cleanly instead of silently truncating it. */
+    private boolean isWideInteger(net.loveruby.cflat.type.Type t) {
+        return t.isInteger() && t.size() > 4;
+    }
+
+    /** Same check, for the IR-level asm.Type an Expr node carries (as
+     *  opposed to the semantic net.loveruby.cflat.type.Type a
+     *  declaration/parameter/return type carries) -- the one other place
+     *  a value of this size can turn up: compile(Expr)'s choke point. */
+    private boolean isWideInteger(net.loveruby.cflat.asm.Type t) {
+        return !t.isFloat() && t.size() > 4;
+    }
+
     private boolean isAggregateVar(Expr e) {
         return (e instanceof Var) && isAggregate(((Var) e).getEntityForce().type());
     }
@@ -851,6 +883,11 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator,
         if (n.type() != null && n.type().isFloat()) {
             errorHandler.error("floating-point types are not supported by the x86 "
                     + "backend yet (the JVM backend, -arch=jvm, supports them)");
+            as.mov(imm(0), ax());
+        }
+        else if (n.type() != null && isWideInteger(n.type())) {
+            errorHandler.error("64-bit integer types (long long) are not supported "
+                    + "by the x86 backend yet (the JVM backend, -arch=jvm, supports them)");
             as.mov(imm(0), ax());
         }
         else {

@@ -36,6 +36,13 @@ public class TypeTable {
         // just its width/signedness like every other integer type here.
         table.put(IntegerTypeRef.boolRef(),
                   new IntegerType(charsize, false, "_Bool"));
+        // "long long" is always (at least) 64 bits per C99, regardless of
+        // "long"'s own width on this platform (e.g. ilp32's 4-byte long) --
+        // same reasoning as float/double just below.
+        table.put(IntegerTypeRef.longlongRef(),
+                  new IntegerType(8, true, "long long"));
+        table.put(IntegerTypeRef.ulonglongRef(),
+                  new IntegerType(8, false, "unsigned long long"));
         // float/double sizes are fixed by (the relevant parts of) IEEE 754
         // regardless of the platform's int/long/pointer widths.
         table.put(FloatTypeRef.floatRef(), new FloatType(4, "float"));

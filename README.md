@@ -238,6 +238,30 @@ described below:
     initializers generally, the array/struct/union's own type must be
     written out in full (`(int[])`, without a length, to infer it from
     the initializer list the way C99 itself allows, isn't supported).
+  * **`long long`/`unsigned long long`**: a real, distinct 8-byte integer
+    type (`sizeof(long long) == 8`), including the `LL`/`ULL`/`LU`/`UL`
+    literal suffixes (`123456789012345LL`), usable anywhere a type can
+    appear on both backends. On the JVM backend it's fully functional --
+    arithmetic, comparisons, casts, everything -- since the JVM's own
+    `long` is already a native 64-bit type. **The x86 backend rejects it
+    at code generation time** (parses and type-checks fine, same as
+    everywhere else, but a function using it as a parameter/return type,
+    or in any expression, is a clean compile error), exactly like
+    `float`/`double` on that backend: it's a 32-bit-only target with no
+    multi-register/carry-chain 64-bit integer arithmetic, and a silently
+    truncated `long long` would be a much worse outcome than a clean
+    rejection.
+  * **`restrict`**: parses on a pointer (`int *restrict p`) and is a
+    complete no-op, exactly like `inline` -- `restrict` only ever
+    promises the optimizer that no other pointer aliases the same
+    memory, which can't change what a conforming program observes, and
+    this compiler does no alias-based optimization that promise could
+    enable in the first place.
+  * **Hexadecimal floating-point constants**: `0x1.8p3` (== 12.0),
+    `0x1p10` (== 1024.0), `0x.1p4` (== 1.0) -- a hex significand with a
+    *mandatory* binary (`p`/`P`) exponent, per C99 6.4.4.2. (The `p`
+    exponent is what tells a hex float apart from a plain hex integer
+    literal like `0x1A`, which is unaffected.)
 
 ## Preprocessor
 

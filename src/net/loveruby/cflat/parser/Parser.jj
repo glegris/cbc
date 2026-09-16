@@ -396,6 +396,7 @@ TOKEN: {
     | <UNSIGNED : "unsigned">
     | <BOOL_    : "_Bool">
     | <INLINE   : "inline">
+    | <RESTRICT : "restrict">
     | <IF       : "if">
     | <ELSE     : "else">
     | <SWITCH   : "switch">
@@ -424,10 +425,16 @@ TOKEN: {
 // integer literals
 // #@@range/lex_integer{
 TOKEN: {
-    <INTEGER: ["1"-"9"] (["0"-"9"])* ("U")? ("L")?
-            | "0" ["x", "X"] (["0"-"9", "a"-"f", "A"-"F"])+ ("U")? ("L")?
-            | "0" (["0"-"7"])* ("U")? ("L")?
+    <INTEGER: ["1"-"9"] (["0"-"9"])* (<INTSUFFIX>)?
+            | "0" ["x", "X"] (["0"-"9", "a"-"f", "A"-"F"])+ (<INTSUFFIX>)?
+            | "0" (["0"-"7"])* (<INTSUFFIX>)?
             >
+    // A "long long" literal takes "LL" (e.g. "123456789012345LL"), same
+    // as "L" alone already meant "long" -- in either order relative to
+    // "U", matching real C99 ("100ULL", "100LLU", "100UL" and "100LU"
+    // are all valid). integerValue()'s "[UL]+" strip already handles
+    // whatever combination this matches, unchanged.
+    | <#INTSUFFIX: ("U" (["L"]){0,2}) | ((["L"]){1,2} ("U")?)>
 }
 // #@@}
 
@@ -437,8 +444,21 @@ TOKEN: {
     <FLOATLIT: (["0"-"9"])+ "." (["0"-"9"])* (<EXPONENT>)? (["f","F","l","L"])?
              | "." (["0"-"9"])+ (<EXPONENT>)? (["f","F","l","L"])?
              | (["0"-"9"])+ <EXPONENT> (["f","F","l","L"])?
+             // C99 hexadecimal floating constants, e.g. "0x1.8p3" (== 12.0):
+             // a hex significand (unlike the decimal forms above, the
+             // binary exponent is *mandatory* here, since without it
+             // "0x1.8" would be indistinguishable from... nothing valid
+             // in hex, but more importantly this keeps a plain hex
+             // *integer* like "0x1A" unambiguously matched by <INTEGER>
+             // instead -- JavaCC's longest-match rule only prefers this
+             // token when a "p"/"P" exponent is actually present).
+             | "0" ["x","X"] (["0"-"9","a"-"f","A"-"F"])+
+                   "." (["0"-"9","a"-"f","A"-"F"])* <HEXEXPONENT> (["f","F","l","L"])?
+             | "0" ["x","X"] "." (["0"-"9","a"-"f","A"-"F"])+ <HEXEXPONENT> (["f","F","l","L"])?
+             | "0" ["x","X"] (["0"-"9","a"-"f","A"-"F"])+ <HEXEXPONENT> (["f","F","l","L"])?
              >
     | <#EXPONENT: ["e","E"] (["+","-"])? (["0"-"9"])+>
+    | <#HEXEXPONENT: ["p","P"] (["+","-"])? (["0"-"9"])+>
 }
 // #@@}
 
@@ -989,8 +1009,13 @@ TypeRef typeref():
         {
             ref = new ArrayTypeRef(ref, integerValue(t.image));
         }
-    | "*"
+    | "*" [<RESTRICT>]
         {
+            // "restrict" (e.g. "int *restrict p") only ever promises the
+            // optimizer that no other pointer aliases the same memory --
+            // it can't change what a conforming program observes, so
+            // with no alias-based optimization here to enable, parsing
+            // and discarding it is a complete, correct implementation.
             ref = new PointerTypeRef(ref);
         }
     | "(" params=param_typerefs() ")"
@@ -1046,6 +1071,8 @@ TypeRef typeref_base():
     | t=<CHAR>          { return IntegerTypeRef.charRef(location(t)); }
     | t=<SHORT>         { return IntegerTypeRef.shortRef(location(t)); }
     | t=<INT>           { return IntegerTypeRef.intRef(location(t)); }
+    | LOOKAHEAD(2) t=<LONG> <LONG>
+        { return IntegerTypeRef.longlongRef(location(t)); }
     | t=<LONG>          { return IntegerTypeRef.longRef(location(t)); }
     | t=<FLOAT>         { return FloatTypeRef.floatRef(location(t)); }
     | t=<DOUBLE>        { return FloatTypeRef.doubleRef(location(t)); }
@@ -1056,6 +1083,8 @@ TypeRef typeref_base():
         { return IntegerTypeRef.ushortRef(location(t)); }
     | LOOKAHEAD(2) t=<UNSIGNED> <INT>
         { return IntegerTypeRef.uintRef(location(t)); }
+    | LOOKAHEAD(3) t=<UNSIGNED> <LONG> <LONG>
+        { return IntegerTypeRef.ulonglongRef(location(t)); }
     | t=<UNSIGNED> <LONG>
         { return IntegerTypeRef.ulongRef(location(t)); }
     | t=<STRUCT> name=<IDENTIFIER>
