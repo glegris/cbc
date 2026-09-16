@@ -645,7 +645,7 @@ ExprNode initializer():
     | e=expr()               { return e; }
 }
 
-ExprNode aggregate_literal():
+AggregateLiteralNode aggregate_literal():
 {
     Token t;
     List<ExprNode> elems = new ArrayList<ExprNode>();
@@ -1506,9 +1506,21 @@ ExprNode term():
 {
     TypeNode t;
     ExprNode n;
+    AggregateLiteralNode lit;
 }
 {
-      LOOKAHEAD("(" type())
+      // A C99 compound literal, "(type){...}", looks exactly like a cast
+      // up through the closing ")" -- the brace right after it is what
+      // tells the two apart, hence the more specific lookahead tried
+      // first.
+      LOOKAHEAD("(" type() ")" "{")
+      "(" t=type() ")" lit=aggregate_literal()
+        { n = new CompoundLiteralNode(t, lit); }
+      n=postfix_suffixes(n)
+        {
+            return n;
+        }
+    | LOOKAHEAD("(" type())
       "(" t=type() ")" n=term()     { return new CastNode(t, n); }
     | n=unary()                     { return n; }
 }
@@ -1543,13 +1555,27 @@ ExprNode unary():
 
 // #@@range/postfix{
 ExprNode postfix():
+{ ExprNode expr; }
 {
-    ExprNode expr, idx;
+    expr=primary() expr=postfix_suffixes(expr)
+        {
+            return expr;
+        }
+}
+// #@@}
+
+// The "++"/"--"/"[]"/"."/"->"/"(...)" suffix chain that can follow any
+// postfix-expression -- factored out so a compound literal (term(), not
+// primary(), since it needs its own lookahead against a plain cast) gets
+// the exact same suffix handling as everything else, e.g.
+// "(struct point){1,2}.x" or "(struct point[2]){{1,2},{3,4}}[1].y".
+ExprNode postfix_suffixes(ExprNode expr):
+{
+    ExprNode idx;
     String memb;
     List<ExprNode> args;
 }
 {
-    expr=primary()
     ( "++"                  { expr = new SuffixOpNode("++", expr); }
     | "--"                  { expr = new SuffixOpNode("--", expr); }
     | "[" idx=expr() "]"    { expr = new ArefNode(expr, idx); }
@@ -1561,7 +1587,6 @@ ExprNode postfix():
             return expr;
         }
 }
-// #@@}
 
 // #@@range/name{
 String name():

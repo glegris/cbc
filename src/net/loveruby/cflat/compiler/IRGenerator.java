@@ -809,6 +809,34 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
                 + "generic expression transformation");
     }
 
+    // A C99 compound literal ("(type){...}") is lowered exactly like
+    // "type @tmp = {...};" would be -- a fresh compiler-synthesized
+    // local (same tmpVar() mechanism used for e.g. an assignment used as
+    // an expression), initialized in place right here, evaluating to a
+    // reference to it. Since IR generation for the whole function
+    // finishes before either backend computes the function's frame
+    // layout, this tmp is picked up by that layout automatically, same
+    // as any other local.
+    public Expr visit(CompoundLiteralNode node) {
+        if (scopeStack == null) {
+            // Not inside a function body -- e.g. a global/static
+            // variable's own initializer ("int *p = (int[]){1,2,3};").
+            // Scope note: only usable inside a function body for now,
+            // where it always has automatic storage duration; there's no
+            // local scope here to allocate the backing tmp variable in,
+            // and giving it static storage instead (like the global it's
+            // initializing) would need a separate lowering path this
+            // doesn't have yet.
+            errorHandler.error(node.location(),
+                    "compound literal is not supported here (only inside a function body)");
+            return new Int(asmType(node.type()), 0);
+        }
+        DefinedVariable tmp = tmpVar(node.type());
+        assignAggregateLiteral(node.location(),
+                addressOf(ref(tmp)), node.type(), node.literal());
+        return ref(tmp);
+    }
+
     //
     // Aggregate ("{...}") initializers
     //

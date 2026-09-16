@@ -185,6 +185,12 @@ public class TypeResolver extends Visitor
         return null;
     }
 
+    public Void visit(CompoundLiteralNode node) {
+        bindType(node.typeNode());
+        super.visit(node);
+        return null;
+    }
+
     private void error(Node node, String msg) {
         errorHandler.error(node.location(), msg);
     }

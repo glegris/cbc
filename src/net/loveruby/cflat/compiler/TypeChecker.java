@@ -79,6 +79,21 @@ class TypeChecker extends Visitor {
             return;
         }
         if (var.hasInitializer()) {
+            if (var.initializer() instanceof CompoundLiteralNode) {
+                // "T x = (T){...};" is just "T x = {...};" with a
+                // redundant type annotation -- unwrap it so the exact
+                // same array/struct/union initializer lowering below
+                // handles it, instead of going through a hidden
+                // temporary plus a whole-object copy (which plain array
+                // assignment doesn't even support).
+                CompoundLiteralNode lit = (CompoundLiteralNode) var.initializer();
+                if (! lit.type().isSameType(var.type())) {
+                    error(var.location(), "cannot initialize " + var.type()
+                            + " with a compound literal of type " + lit.type());
+                    return;
+                }
+                var.setInitializer(lit.literal());
+            }
             if (var.initializer() instanceof AggregateLiteralNode) {
                 // A brace initializer is fine for an array/struct/union
                 // (isInvalidLHSType would otherwise reject an array
@@ -642,6 +657,18 @@ class TypeChecker extends Visitor {
         if (! node.expr().type().isCastableTo(node.type())) {
             invalidCastError(node, node.expr().type(), node.type());
         }
+        return null;
+    }
+
+    public Void visit(CompoundLiteralNode node) {
+        if (isInvalidVariableType(node.type())) {
+            error(node, "invalid compound literal type: " + node.type());
+            return null;
+        }
+        // Same validation/casting a variable's own brace initializer
+        // gets (array/struct/union member-by-member, or a single scalar)
+        // -- a compound literal is initialized exactly the same way.
+        checkAggregateLiteral(node.type(), node.literal());
         return null;
     }
 

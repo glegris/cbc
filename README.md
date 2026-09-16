@@ -219,6 +219,25 @@ described below:
     like `volatile` parsing without changing codegen. Accepted a bit more
     broadly than real C99 strictly allows (e.g. also tolerated on a local
     variable declaration) since nothing here ever needs to reject it.
+  * **Compound literals**: `(struct point){1, 2}` or `(int[3]){1, 2, 3}`
+    used as an expression, anywhere one is allowed inside a function
+    body -- passed straight to a function (`sum_point((struct
+    point){3,4})`), addressed (`&(struct point){1,2}`), or with a member
+    immediately accessed off it (`(struct point){1,2}.x`). It's a
+    genuine lvalue with automatic storage duration, like any other local
+    variable: `(struct point){1,2}.x = 9;` is legal, and its lifetime is
+    the rest of the enclosing block, same as a variable declared there.
+    `T x = (T){...};` (the type name is then redundant, since `x`'s own
+    type already says the same thing) is recognized as exactly
+    equivalent to `T x = {...};`, not a separate hidden copy. Two scope
+    limits: only usable inside a function body -- not as a global/static
+    variable's own initializer, since a compound literal's *normal*
+    (automatic-storage) form needs a function to be local to, and this
+    doesn't yet also support the *static*-storage-duration form C99
+    allows at file scope -- and, matching this compiler's aggregate
+    initializers generally, the array/struct/union's own type must be
+    written out in full (`(int[])`, without a length, to infer it from
+    the initializer list the way C99 itself allows, isn't supported).
 
 ## Preprocessor
 

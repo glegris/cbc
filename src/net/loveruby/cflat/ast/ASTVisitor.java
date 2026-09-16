@@ -41,4 +41,5 @@ public interface ASTVisitor<S, E> {
     public E visit(FloatLiteralNode node);
     public E visit(StringLiteralNode node);
     public E visit(AggregateLiteralNode node);
+    public E visit(CompoundLiteralNode node);
 }
