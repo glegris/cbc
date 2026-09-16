@@ -87,16 +87,23 @@ described below:
     `struct point p = {1, 2};`, and nested forms like
     `int[2][2] m = {{1,2},{3,4}};` or a struct member that's itself an
     array/struct. Fewer initializers than elements/members zero-fills
-    the rest; a union initializer sets only its first member. Two scope
-    limits: the array's size must be given explicitly (inferring it from
-    the initializer list, like C's `int a[] = {1,2,3};`, isn't
-    supported), and there are no designated initializers (`.field = x`,
-    `[i] = x`) -- elements always map to array indices / struct members
-    in declaration order. A global (or `static` local)'s initializer
-    elements must be compile-time constants, same as plain C requires at
-    file scope; a non-static local's can be arbitrary runtime
-    expressions, lowered to ordinary element-by-element assignments run
-    where the declaration appears.
+    the rest; a union initializer sets only one member. **Designated
+    initializers** work too: `int[6] a = {[4] = 29, [2] = 15};`,
+    `struct point p = {.y = 2, .x = 1};` (any order), and mixing plain
+    and designated elements in one list (a plain element continues right
+    after the previous element's position, same as C99) -- including
+    giving the same spot a value more than once, where the last one
+    given wins. Only a single, non-chained designator per element
+    (`.member` or `[index]`, never `.a.b`, `[i].a`, or both at once), and
+    `[index]` needs a plain integer literal, not a general constant
+    expression. Two more scope limits, regardless of designators: the
+    array's size must be given explicitly (inferring it from the
+    initializer list, like C's `int a[] = {1,2,3};`, isn't supported),
+    and a global (or `static` local)'s initializer elements must be
+    compile-time constants, same as plain C requires at file scope; a
+    non-static local's can be arbitrary runtime expressions, lowered to
+    ordinary element-by-element assignments run where the declaration
+    appears.
   * **`const`/`volatile` qualifiers**: usable on local/global variables,
     function parameters, struct/union members, casts and `sizeof`, in
     any combination with pointers (`const char *s`, `const int x`, ...).

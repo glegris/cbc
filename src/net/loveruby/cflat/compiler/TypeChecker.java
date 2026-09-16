@@ -108,9 +108,14 @@ class TypeChecker extends Visitor {
      *  inferring it from the initializer list's size (like C's "int
      *  a[] = {1,2,3};") isn't supported, since by the time TypeChecker
      *  runs, TypeResolver has already bound the variable's type and
-     *  there is no clean way to go back and resize it. Designated
-     *  initializers (".field = x", "[i] = x") aren't supported either:
-     *  elements always map to array indices / struct members in order.
+     *  there is no clean way to go back and resize it.
+     *
+     *  A ".member"/"[index]" designator (see AggregateLiteralNode) sets
+     *  where an element lands instead of the usual "right after the
+     *  previous element"; resolvePositions() does that resolution, this
+     *  method only validates the result (in bounds, member exists, right
+     *  kind of designator for an array vs. a struct/union) and casts
+     *  each element same as before.
      */
     private void checkAggregateLiteral(Type targetType, AggregateLiteralNode lit) {
         lit.setType(targetType);
@@ -123,29 +128,57 @@ class TypeChecker extends Visitor {
                         + "is not supported): " + targetType);
                 return;
             }
-            if (elems.size() > at.length()) {
-                error(lit, "too many initializers for " + targetType + ": expected "
-                        + "at most " + at.length() + ", got " + elems.size());
-                return;
-            }
+            List<Integer> positions = lit.resolvePositions(null);
             for (int i = 0; i < elems.size(); i++) {
+                if (lit.members().get(i) != null) {
+                    error(elems.get(i), "cannot use a \".member\" designator to "
+                            + "initialize an array: " + targetType);
+                    continue;
+                }
+                int pos = positions.get(i);
+                if (pos < 0 || pos >= at.length()) {
+                    error(elems.get(i), "array index designator out of bounds for "
+                            + targetType + ": [" + pos + "]");
+                    continue;
+                }
                 checkAggregateElement(at.baseType(), elems, i);
             }
         }
         else if (targetType.isStruct() || targetType.isUnion()) {
-            List<Slot> members = targetType.getCompositeType().members();
-            if (targetType.isUnion() && elems.size() > 1) {
-                error(lit, "too many initializers for union " + targetType
-                        + ": a union initializer sets only its first member");
-                return;
-            }
-            if (elems.size() > members.size()) {
-                error(lit, "too many initializers for " + targetType + ": expected "
-                        + "at most " + members.size() + ", got " + elems.size());
-                return;
-            }
+            final List<Slot> members = targetType.getCompositeType().members();
+            List<Integer> positions = lit.resolvePositions(
+                    new AggregateLiteralNode.MemberIndexOf() {
+                        public int indexOf(String name) {
+                            for (int j = 0; j < members.size(); j++) {
+                                if (members.get(j).name().equals(name)) return j;
+                            }
+                            return -1;
+                        }
+                    });
+            int usedCount = 0;
             for (int i = 0; i < elems.size(); i++) {
-                checkAggregateElement(members.get(i).type(), elems, i);
+                if (lit.indices().get(i) != null) {
+                    error(elems.get(i), "cannot use a \"[index]\" designator to "
+                            + "initialize " + targetType);
+                    continue;
+                }
+                int pos = positions.get(i);
+                if (pos < 0) {
+                    error(elems.get(i), "no such member in " + targetType + ": "
+                            + lit.members().get(i));
+                    continue;
+                }
+                if (pos >= members.size()) {
+                    error(elems.get(i), "too many initializers for " + targetType
+                            + ": expected at most " + members.size());
+                    continue;
+                }
+                checkAggregateElement(members.get(pos).type(), elems, i);
+                usedCount++;
+            }
+            if (targetType.isUnion() && usedCount > 1) {
+                error(lit, "too many initializers for union " + targetType
+                        + ": a union initializer sets only one member");
             }
         }
         else if (elems.size() == 1) {

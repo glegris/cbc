@@ -337,6 +337,21 @@ public class Parser {
         return new Location(sourceName, t);
     }
     // #@@}
+
+    /** One "{...}" element, with its optional C99 designator: ".member"
+     *  or "[index]" (at most one of the two, never both/chained -- see
+     *  AggregateLiteralNode's own doc comment for the supported scope). */
+    static class DesignatedElem {
+        String member;
+        Long index;
+        ExprNode value;
+
+        DesignatedElem(String member, Long index, ExprNode value) {
+            this.member = member;
+            this.index = index;
+            this.value = value;
+        }
+    }
 }
 PARSER_END(Parser)
 
@@ -620,14 +635,41 @@ ExprNode aggregate_literal():
 {
     Token t;
     List<ExprNode> elems = new ArrayList<ExprNode>();
+    List<String> members = new ArrayList<String>();
+    List<Long> indices = new ArrayList<Long>();
+    DesignatedElem d;
+}
+{
+    t="{" d=designated_initializer()
+        { elems.add(d.value); members.add(d.member); indices.add(d.index); }
+    ("," d=designated_initializer()
+        { elems.add(d.value); members.add(d.member); indices.add(d.index); }
+    )*
+    "}"
+        {
+            return new AggregateLiteralNode(location(t), elems, members, indices);
+        }
+}
+
+// A "{...}" element, optionally led by a C99 designator: ".member =" or
+// "[index] =" (the array index must be a plain integer literal -- a
+// general constant expression there isn't supported). Chained/nested
+// designators (".a.b =", "[i].a =") aren't supported either: only one
+// designator per element, always at that element's own top level.
+DesignatedElem designated_initializer():
+{
+    Token t;
+    String member = null;
+    Long index = null;
     ExprNode e;
 }
 {
-    t="{" e=initializer() { elems.add(e); }
-    ("," e=initializer() { elems.add(e); })*
-    "}"
+    ( "." t=<IDENTIFIER> { member = t.image; } "="
+    | "[" t=<INTEGER> { index = integerValue(t.image); } "]" "="
+    )?
+    e=initializer()
         {
-            return new AggregateLiteralNode(location(t), elems);
+            return new DesignatedElem(member, index, e);
         }
 }
 // #@@}

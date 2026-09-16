@@ -3,6 +3,7 @@ import net.loveruby.cflat.ast.*;
 import net.loveruby.cflat.entity.*;
 import net.loveruby.cflat.type.Type;
 import net.loveruby.cflat.type.TypeTable;
+import net.loveruby.cflat.type.CompositeType;
 import net.loveruby.cflat.ir.*;
 import net.loveruby.cflat.asm.Label;
 import net.loveruby.cflat.utils.ErrorHandler;
@@ -26,8 +27,8 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
         for (DefinedVariable var : ast.definedVariables()) {
             if (var.hasInitializer()) {
                 if (var.initializer() instanceof AggregateLiteralNode) {
-                    var.setStaticInitEntries(flattenStaticAggregate(
-                            var.type(), (AggregateLiteralNode) var.initializer(), 0));
+                    var.setStaticInitEntries(normalizeStaticEntries(flattenStaticAggregate(
+                            var.type(), (AggregateLiteralNode) var.initializer(), 0)));
                 }
                 else {
                     var.setIR(transformExpr(var.initializer()));
@@ -176,7 +177,8 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
                     AggregateLiteralNode lit = (AggregateLiteralNode) var.initializer();
                     if (var.isPrivate()) {
                         // static variables: same static-data mechanism as globals
-                        var.setStaticInitEntries(flattenStaticAggregate(var.type(), lit, 0));
+                        var.setStaticInitEntries(normalizeStaticEntries(
+                                flattenStaticAggregate(var.type(), lit, 0)));
                     }
                     else {
                         // automatic (stack) variables: lower to real
@@ -809,16 +811,18 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
         if (destType.isArray()) {
             Type elemType = destType.baseType();
             long elemSize = elemType.allocSize();
+            List<Integer> positions = lit.resolvePositions(null);
             for (int i = 0; i < elems.size(); i++) {
-                Expr elemAddr = new Bin(ptr_t(), Op.ADD, destAddr, ptrdiff(i * elemSize));
+                Expr elemAddr = new Bin(ptr_t(), Op.ADD, destAddr,
+                        ptrdiff(positions.get(i) * elemSize));
                 assignAggregateElement(loc, elemAddr, elemType, elems.get(i));
             }
         }
         else if (destType.isStruct() || destType.isUnion()) {
-            destType.getCompositeType().size();  // force member offsets to be computed
-            List<Slot> members = destType.getCompositeType().members();
+            final List<Slot> members = aggregateMembers(destType);
+            List<Integer> positions = lit.resolvePositions(memberIndexOf(members));
             for (int i = 0; i < elems.size(); i++) {
-                Slot m = members.get(i);
+                Slot m = members.get(positions.get(i));
                 Expr elemAddr = new Bin(ptr_t(), Op.ADD, destAddr, ptrdiff(m.offset()));
                 assignAggregateElement(loc, elemAddr, m.type(), elems.get(i));
             }
@@ -828,6 +832,27 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
             // TypeChecker#checkAggregateLiteral)
             assignAggregateElement(loc, destAddr, destType, elems.get(0));
         }
+    }
+
+    /** destType's members, with offsets already computed (Slot#offset()
+     *  is lazily filled in by CompositeType#size()/memberOffset(), so a
+     *  bare members() call without first forcing that would still read
+     *  Type.sizeUnknown off of every Slot). */
+    private List<Slot> aggregateMembers(Type destType) {
+        CompositeType ct = destType.getCompositeType();
+        ct.size();
+        return ct.members();
+    }
+
+    private AggregateLiteralNode.MemberIndexOf memberIndexOf(final List<Slot> members) {
+        return new AggregateLiteralNode.MemberIndexOf() {
+            public int indexOf(String name) {
+                for (int j = 0; j < members.size(); j++) {
+                    if (members.get(j).name().equals(name)) return j;
+                }
+                return -1;
+            }
+        };
     }
 
     private void assignAggregateElement(Location loc, Expr elemAddr, Type elemType,
@@ -846,6 +871,29 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
      *  DefinedVariable#setStaticInitEntries. baseOffset is 0 for the
      *  top-level call, and a member/element's own offset for a
      *  recursive, nested one. */
+    /** Designators mean flattenStaticAggregate's entries for a single
+     *  top-level literal can arrive out of offset order, or even target
+     *  the same offset twice (C99 gives the last one to specify a given
+     *  spot the final say) -- unlike the local-variable path, where that
+     *  "just works" because each entry becomes its own sequential
+     *  runtime store, both backends' static-data emission needs its
+     *  entries strictly increasing in offset (see e.g. x86's
+     *  generateAggregateImmediate). Sorting by offset into a
+     *  TreeMap<Long,Expr> gets both properties at once: iteration order
+     *  becomes offset order, and inserting a later duplicate offset
+     *  overwrites the earlier value already there. */
+    private List<StaticInitEntry> normalizeStaticEntries(List<StaticInitEntry> raw) {
+        TreeMap<Long, Expr> byOffset = new TreeMap<Long, Expr>();
+        for (StaticInitEntry ent : raw) {
+            byOffset.put(ent.offset(), ent.value());
+        }
+        List<StaticInitEntry> result = new ArrayList<StaticInitEntry>();
+        for (Map.Entry<Long, Expr> ent : byOffset.entrySet()) {
+            result.add(new StaticInitEntry(ent.getKey(), ent.getValue()));
+        }
+        return result;
+    }
+
     private List<StaticInitEntry> flattenStaticAggregate(Type destType,
             AggregateLiteralNode lit, long baseOffset) {
         List<StaticInitEntry> result = new ArrayList<StaticInitEntry>();
@@ -853,16 +901,17 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
         if (destType.isArray()) {
             Type elemType = destType.baseType();
             long elemSize = elemType.allocSize();
+            List<Integer> positions = lit.resolvePositions(null);
             for (int i = 0; i < elems.size(); i++) {
                 result.addAll(flattenStaticElement(elemType, elems.get(i),
-                        baseOffset + i * elemSize));
+                        baseOffset + positions.get(i) * elemSize));
             }
         }
         else if (destType.isStruct() || destType.isUnion()) {
-            destType.getCompositeType().size();  // force member offsets to be computed
-            List<Slot> members = destType.getCompositeType().members();
+            List<Slot> members = aggregateMembers(destType);
+            List<Integer> positions = lit.resolvePositions(memberIndexOf(members));
             for (int i = 0; i < elems.size(); i++) {
-                Slot m = members.get(i);
+                Slot m = members.get(positions.get(i));
                 result.addAll(flattenStaticElement(m.type(), elems.get(i),
                         baseOffset + m.offset()));
             }
