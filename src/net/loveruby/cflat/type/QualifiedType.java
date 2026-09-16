@@ -35,6 +35,7 @@ public class QualifiedType extends Type {
     public boolean isVoid() { return real.isVoid(); }
     public boolean isInt() { return real.isInt(); }
     public boolean isInteger() { return real.isInteger(); }
+    public boolean isBool() { return real.isBool(); }
     public boolean isFloat() { return real.isFloat(); }
     public boolean isSigned() { return real.isSigned(); }
     public boolean isPointer() { return real.isPointer(); }

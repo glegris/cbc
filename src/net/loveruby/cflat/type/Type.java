@@ -13,6 +13,7 @@ public abstract class Type {
     public boolean isVoid() { return false; }
     public boolean isInt() { return false; }
     public boolean isInteger() { return false; }
+    public boolean isBool() { return false; }
     public boolean isFloat() { return false; }
     public boolean isSigned()
             { throw new Error("#isSigned for non-integer type"); }

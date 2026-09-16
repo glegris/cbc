@@ -29,6 +29,7 @@ public class UserType extends NamedType {
     public boolean isVoid() { return realType().isVoid(); }
     public boolean isInt() { return realType().isInt(); }
     public boolean isInteger() { return realType().isInteger(); }
+    public boolean isBool() { return realType().isBool(); }
     public boolean isFloat() { return realType().isFloat(); }
     public boolean isSigned() { return realType().isSigned(); }
     public boolean isPointer() { return realType().isPointer(); }

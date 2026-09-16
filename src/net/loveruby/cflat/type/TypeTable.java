@@ -30,6 +30,12 @@ public class TypeTable {
                   new IntegerType(intsize, false, "unsigned int"));
         table.put(IntegerTypeRef.ulongRef(),
                   new IntegerType(longsize, false, "unsigned long"));
+        // Same size/representation as an unsigned char (1 byte is plenty
+        // for a value that's only ever 0 or 1); see IntegerType#isBool()
+        // for the one place its identity actually matters, rather than
+        // just its width/signedness like every other integer type here.
+        table.put(IntegerTypeRef.boolRef(),
+                  new IntegerType(charsize, false, "_Bool"));
         // float/double sizes are fixed by (the relevant parts of) IEEE 754
         // regardless of the platform's int/long/pointer widths.
         table.put(FloatTypeRef.floatRef(), new FloatType(4, "float"));

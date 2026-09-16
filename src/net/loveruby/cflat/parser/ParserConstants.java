@@ -49,47 +49,51 @@ public interface ParserConstants {
   /** RegularExpression Id. */
   int UNSIGNED = 21;
   /** RegularExpression Id. */
-  int IF = 22;
+  int BOOL_ = 22;
   /** RegularExpression Id. */
-  int ELSE = 23;
+  int INLINE = 23;
   /** RegularExpression Id. */
-  int SWITCH = 24;
+  int IF = 24;
   /** RegularExpression Id. */
-  int CASE = 25;
+  int ELSE = 25;
   /** RegularExpression Id. */
-  int DEFAULT_ = 26;
+  int SWITCH = 26;
   /** RegularExpression Id. */
-  int WHILE = 27;
+  int CASE = 27;
   /** RegularExpression Id. */
-  int DO = 28;
+  int DEFAULT_ = 28;
   /** RegularExpression Id. */
-  int FOR = 29;
+  int WHILE = 29;
   /** RegularExpression Id. */
-  int RETURN = 30;
+  int DO = 30;
   /** RegularExpression Id. */
-  int BREAK = 31;
+  int FOR = 31;
   /** RegularExpression Id. */
-  int CONTINUE = 32;
+  int RETURN = 32;
   /** RegularExpression Id. */
-  int GOTO = 33;
+  int BREAK = 33;
   /** RegularExpression Id. */
-  int TYPEDEF = 34;
+  int CONTINUE = 34;
   /** RegularExpression Id. */
-  int IMPORT = 35;
+  int GOTO = 35;
   /** RegularExpression Id. */
-  int SIZEOF = 36;
+  int TYPEDEF = 36;
   /** RegularExpression Id. */
-  int IDENTIFIER = 37;
+  int IMPORT = 37;
   /** RegularExpression Id. */
-  int INTEGER = 38;
+  int SIZEOF = 38;
   /** RegularExpression Id. */
-  int FLOATLIT = 39;
+  int IDENTIFIER = 39;
   /** RegularExpression Id. */
-  int EXPONENT = 40;
+  int INTEGER = 40;
   /** RegularExpression Id. */
-  int CHARACTER = 45;
+  int FLOATLIT = 41;
   /** RegularExpression Id. */
-  int STRING = 50;
+  int EXPONENT = 42;
+  /** RegularExpression Id. */
+  int CHARACTER = 47;
+  /** RegularExpression Id. */
+  int STRING = 52;
 
   /** Lexical state. */
   int DEFAULT = 0;
@@ -126,6 +130,8 @@ public interface ParserConstants {
     "\"volatile\"",
     "\"signed\"",
     "\"unsigned\"",
+    "\"_Bool\"",
+    "\"inline\"",
     "\"if\"",
     "\"else\"",
     "\"switch\"",
@@ -146,14 +152,14 @@ public interface ParserConstants {
     "<FLOATLIT>",
     "<EXPONENT>",
     "\"\\\'\"",
-    "<token of kind 42>",
-    "<token of kind 43>",
     "<token of kind 44>",
+    "<token of kind 45>",
+    "<token of kind 46>",
     "\"\\\'\"",
     "\"\\\"\"",
-    "<token of kind 47>",
-    "<token of kind 48>",
     "<token of kind 49>",
+    "<token of kind 50>",
+    "<token of kind 51>",
     "\"\\\"\"",
     "\"(\"",
     "\".\"",

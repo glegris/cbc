@@ -191,6 +191,34 @@ described below:
     even in another, unrelated function -- is a duplicate-type-definition
     error rather than two independent local types the way real C99 would
     treat them.
+  * **Adjacent string literal concatenation**: `"abc" "def"` is the same
+    as `"abcdef"` (C99 6.4.5p5) -- any number of adjacent string literals
+    concatenate into one, most often used to spread a long literal across
+    lines or to paste one built by a macro's `#` stringification onto
+    surrounding text.
+  * **`_Bool`**: a real, distinct 1-byte integer type (`sizeof(_Bool) ==
+    1`), usable anywhere a type can appear -- variables, parameters,
+    returns, struct/union members, casts, `sizeof`. One simplification
+    versus real C99: assigning a value into a `_Bool` is just an ordinary
+    narrowing integer conversion (low byte kept, same as assigning into
+    an `unsigned char`), not real C99's "0 if the value compares equal to
+    0, otherwise 1" rule -- so `_Bool b = 256;` stores 0 here, where real
+    C99 requires 1 (256 is nonzero). Assigning a comparison, `!`, `&&` or
+    `||` result (already exactly 0 or 1) is unaffected by this, which
+    covers the overwhelming majority of real uses. `<stdbool.h>` isn't a
+    real header in C99 either -- it's three macros (`bool`, `true`,
+    `false`) over the actual `_Bool` keyword -- so use `#include
+    "stdbool.h"` (found via the same `-I` used for `import`; see
+    `import/stdbool.h`), not `import stdbool;`: an `import`ed file's
+    macros are never visible to the file that imports it (only its
+    compiled declarations are), so this only works through the
+    preprocessor's own `#include`.
+  * **`inline`**: parses (alone or combined with `static`, in either
+    order) and is otherwise a pure no-op -- neither backend has an
+    inliner, so it's accepted purely as documentation/a hint, exactly
+    like `volatile` parsing without changing codegen. Accepted a bit more
+    broadly than real C99 strictly allows (e.g. also tolerated on a local
+    variable declaration) since nothing here ever needs to reject it.
 
 ## Preprocessor
 

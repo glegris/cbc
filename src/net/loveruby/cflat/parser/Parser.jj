@@ -394,6 +394,8 @@ TOKEN: {
     | <VOLATILE : "volatile">
     | <SIGNED   : "signed">
     | <UNSIGNED : "unsigned">
+    | <BOOL_    : "_Bool">
+    | <INLINE   : "inline">
     | <IF       : "if">
     | <ELSE     : "else">
     | <SWITCH   : "switch">
@@ -501,7 +503,7 @@ Declarations declaration_file():
         {
             decls.add(impdecls);
         }
-    ( LOOKAHEAD(<EXTERN> typeref() <IDENTIFIER> "(")
+    ( LOOKAHEAD(<EXTERN> [<INLINE>] typeref() <IDENTIFIER> "(")
       funcdecl=funcdecl()   { decls.addFuncdecl(funcdecl); }
     | vardecl=vardecl()     { decls.addVardecl(vardecl); }
     | defconst=defconst()   { decls.addConstant(defconst); }
@@ -720,10 +722,20 @@ DefinedFunction defun():
 // #@@}
 
 // #@@range/storage{
+// "inline" (in either order relative to "static", as real C allows) is
+// accepted and discarded -- a pure hint to the optimizer that neither
+// backend acts on, same as "volatile" only parsing and propagating
+// without actually changing codegen. This is intentionally permissive
+// about *where* it's accepted (e.g. a local variable, not just a
+// function): rejecting it there would need this production to know
+// whether it's being called for a function or not, which it currently
+// doesn't, and there's no codegen difference either way since it's
+// always a no-op.
 boolean storage():
-{ Token t = null; }
+{ boolean isStatic = false; }
 {
-    [t=<STATIC>] { return (t == null ? false : true); }
+    ( <STATIC> { isStatic = true; } | <INLINE> )*
+        { return isStatic; }
 }
 // #@@}
 
@@ -920,7 +932,7 @@ UndefinedFunction funcdecl():
     Params ps;
 }
 {
-    <EXTERN> ret=typeref() n=name() "(" ps=params() ")" ";"
+    <EXTERN> [<INLINE>] ret=typeref() n=name() "(" ps=params() ")" ";"
         {
             TypeRef t = new FunctionTypeRef(ret, ps.parametersTypeRef());
             return new UndefinedFunction(new TypeNode(t), n, ps);
@@ -1037,6 +1049,7 @@ TypeRef typeref_base():
     | t=<LONG>          { return IntegerTypeRef.longRef(location(t)); }
     | t=<FLOAT>         { return FloatTypeRef.floatRef(location(t)); }
     | t=<DOUBLE>        { return FloatTypeRef.doubleRef(location(t)); }
+    | t=<BOOL_>         { return IntegerTypeRef.boolRef(location(t)); }
     | LOOKAHEAD(2) t=<UNSIGNED> <CHAR>
         { return IntegerTypeRef.ucharRef(location(t)); }
     | LOOKAHEAD(2) t=<UNSIGNED> <SHORT>
@@ -1576,8 +1589,9 @@ List<ExprNode> args():
 // #@@range/primary{
 ExprNode primary():
 {
-    Token t;
+    Token t, first;
     ExprNode n;
+    StringBuffer str;
 }
 {
       t=<INTEGER>
@@ -1596,9 +1610,18 @@ ExprNode primary():
         }
     | t=<STRING>
         {
-            return new StringLiteralNode(location(t),
+            // Adjacent string literals concatenate into one, C99 6.4.5p5,
+            // e.g. "abc" "def" is the same as "abcdef" -- most often seen
+            // spreading one long literal across lines, or built up by a
+            // macro that stringifies part of it.
+            first = t;
+            str = new StringBuffer(stringValue(t.image));
+        }
+      ( t=<STRING> { str.append(stringValue(t.image)); } )*
+        {
+            return new StringLiteralNode(location(first),
                 new PointerTypeRef(IntegerTypeRef.charRef()),
-                stringValue(t.image));
+                str.toString());
         }
     | t=<IDENTIFIER>
         {

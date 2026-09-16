@@ -13,6 +13,7 @@ public class IntegerType extends Type {
     }
 
     public boolean isInteger() { return true; }
+    public boolean isBool() { return name.equals("_Bool"); }
     public boolean isSigned() { return isSigned; }
     public boolean isScalar() { return true; }
 

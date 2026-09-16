@@ -66,6 +66,14 @@ public class IntegerTypeRef extends TypeRef {
         return new IntegerTypeRef("unsigned long");
     }
 
+    static public IntegerTypeRef boolRef(Location loc) {
+        return new IntegerTypeRef("_Bool", loc);
+    }
+
+    static public IntegerTypeRef boolRef() {
+        return new IntegerTypeRef("_Bool");
+    }
+
     protected String name;
 
     public IntegerTypeRef(String name) {
