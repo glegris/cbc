@@ -153,6 +153,22 @@ described below:
     value;` top-level constant form (used well before this, including by
     `enum` above) still works exactly as before and takes priority when
     both could otherwise apply.
+  * **Mixed declarations and code**: a variable declaration can appear
+    anywhere among a block's statements, not just at the top --
+    `printf("go\n"); int x = f(); printf("%d\n", x);` -- and its
+    initializer (if any) runs exactly where the declaration appears,
+    interleaved with the surrounding statements in source order. One
+    simplification versus real C99: the variable is visible for the
+    *whole* enclosing block, not only from its declaration point onward,
+    so (unlike real C) a forward reference before the declaration is
+    accepted rather than rejected as an error.
+  * **`for` with a declaration in its init-clause**:
+    `for (int i = 0; i < n; i++) ...`. The declared variable is scoped to
+    the loop alone (an outer variable of the same name is unaffected
+    after the loop ends), matching real C99 -- this desugars to a block
+    containing just the declaration followed by the loop, so nesting two
+    such loops with the same variable name (`for (int i ...) for (int i
+    ...) ...`) works correctly, each `i` shadowing independently.
 
 ## Preprocessor
 

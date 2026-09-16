@@ -172,30 +172,25 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
     public Void visit(BlockNode node) {
         scopeStack.add(node.scope());
         for (DefinedVariable var : node.variables()) {
-            if (var.hasInitializer()) {
+            // Statics initialize once, independent of where in the block
+            // they're declared (this compiler computes them like a
+            // global's initializer, not "on first control-flow pass
+            // through the declaration" as real C99 requires -- a
+            // pre-existing simplification, unrelated to mixed
+            // declarations). Automatic variables are instead initialized
+            // by the DefvarNode placed in stmts() at their declaration's
+            // position -- see visit(DefvarNode) below -- so that a
+            // declaration mixed in among ordinary statements (C99) runs
+            // its initializer at the right point in the block, not
+            // always before the block's first statement.
+            if (var.isPrivate() && var.hasInitializer()) {
                 if (var.initializer() instanceof AggregateLiteralNode) {
                     AggregateLiteralNode lit = (AggregateLiteralNode) var.initializer();
-                    if (var.isPrivate()) {
-                        // static variables: same static-data mechanism as globals
-                        var.setStaticInitEntries(normalizeStaticEntries(
-                                flattenStaticAggregate(var.type(), lit, 0)));
-                    }
-                    else {
-                        // automatic (stack) variables: lower to real
-                        // assignments, run each time this declaration
-                        // is reached at runtime -- exactly like C's own
-                        // "T a[3] = {...};" semantics.
-                        assignAggregateLiteral(var.location(),
-                                addressOf(ref(var)), var.type(), lit);
-                    }
-                }
-                else if (var.isPrivate()) {
-                    // static variables
-                    var.setIR(transformExpr(var.initializer()));
+                    var.setStaticInitEntries(normalizeStaticEntries(
+                            flattenStaticAggregate(var.type(), lit, 0)));
                 }
                 else {
-                    assign(var.location(),
-                        ref(var), transformExpr(var.initializer()));
+                    var.setIR(transformExpr(var.initializer()));
                 }
             }
         }
@@ -203,6 +198,25 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
             transformStmt(s);
         }
         scopeStack.removeLast();
+        return null;
+    }
+
+    public Void visit(DefvarNode node) {
+        DefinedVariable var = node.variable();
+        if (var.isPrivate() || !var.hasInitializer()) {
+            return null;
+        }
+        if (var.initializer() instanceof AggregateLiteralNode) {
+            AggregateLiteralNode lit = (AggregateLiteralNode) var.initializer();
+            // lower to real assignments, run each time this declaration
+            // is reached at runtime -- exactly like C's own
+            // "T a[3] = {...};" semantics.
+            assignAggregateLiteral(var.location(),
+                    addressOf(ref(var)), var.type(), lit);
+        }
+        else {
+            assign(var.location(), ref(var), transformExpr(var.initializer()));
+        }
         return null;
     }
 

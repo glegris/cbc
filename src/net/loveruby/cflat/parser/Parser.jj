@@ -587,6 +587,21 @@ Declarations top_defs():
 // #@@range/defvars{
 List<DefinedVariable> defvars():
 {
+    List<DefinedVariable> defs;
+}
+{
+    defs=defvars_body() ";"
+        {
+            return defs;
+        }
+}
+// #@@}
+
+// Same as defvars(), minus the trailing ";" -- shared with a for-loop's
+// init-clause ("for (int i = 0; ...; ...)"), which has its own ";"
+// right after the declaration.
+List<DefinedVariable> defvars_body():
+{
     List<DefinedVariable> defs = new ArrayList<DefinedVariable>();
     boolean priv;
     TypeNode type;
@@ -604,12 +619,11 @@ List<DefinedVariable> defvars():
             defs.add(new DefinedVariable(priv, type, name, init));
             init = null;
         }
-    )* ";"
+    )*
         {
             return defs;
         }
 }
-// #@@}
 
 // #@@range/initializer{
 // A variable's initializer: either a plain expression, or a brace-
@@ -753,31 +767,42 @@ CBCParameter param():
 // #@@}
 
 // #@@range/block{
+// A declaration can appear anywhere among a block's statements, not only
+// at the top (C99 "mixed declarations and code"); each one still adds to
+// the block's single flat variables() list (so scope resolution, type
+// checking etc. -- which all just walk that list -- need no changes),
+// but a DefvarNode marking its position is also threaded into stmts()
+// for any variable with an initializer, so IRGenerator runs that
+// initializer exactly where the declaration lexically appears, not
+// always before the block's first statement. A variable's visibility
+// still spans the whole enclosing block rather than starting only at its
+// declaration point (a deliberate, documented simplification -- see
+// README.md).
 BlockNode block():
 {
     Token t;
-    List<DefinedVariable> vars;
-    List<StmtNode> stmts;
+    List<DefinedVariable> vars = new ArrayList<DefinedVariable>();
+    List<StmtNode> stmts = new ArrayList<StmtNode>();
+    List<DefinedVariable> declared;
+    StmtNode s;
 }
 {
-    t="{" vars=defvar_list() stmts=stmts() "}"
+    t="{"
+    ( LOOKAHEAD(storage() type() <IDENTIFIER>)
+      declared=defvars()
+        {
+            vars.addAll(declared);
+            for (DefinedVariable v : declared) {
+                if (v.hasInitializer()) {
+                    stmts.add(new DefvarNode(v));
+                }
+            }
+        }
+    | s=stmt() { if (s != null) stmts.add(s); }
+    )*
+    "}"
         {
             return new BlockNode(location(t), vars, stmts);
-        }
-}
-// #@@}
-
-
-// #@@range/defvar_list{
-List<DefinedVariable> defvar_list():
-{
-    List<DefinedVariable> result = new ArrayList<DefinedVariable>();
-    List<DefinedVariable> vars;
-}
-{
-    ( vars=defvars() { result.addAll(vars); } )*
-        {
-            return result;
         }
 }
 // #@@}
@@ -1121,18 +1146,43 @@ DoWhileNode dowhile_stmt():
         }
 }
 
-ForNode for_stmt():
+// A for-loop's init-clause can be a declaration (C99), e.g.
+// "for (int i = 0; i < n; i++)"; the declared variable(s) must only be
+// visible for the loop (not the enclosing block) and initialize before
+// the loop's first condition check, so this desugars to exactly what
+// that C99 form means: a block containing the declaration(s) followed
+// by the loop itself (with an empty init-clause, since the declaration
+// already initialized the variable) -- reusing BlockNode's existing
+// scope/initializer machinery rather than adding a new one to ForNode.
+StmtNode for_stmt():
 {
     Token t;
+    List<DefinedVariable> initDecls = null;
     ExprNode init = null, cond = null, incr = null;
     StmtNode body;
 }
 {
-    t=<FOR> "(" [init=expr()] ";"
+    t=<FOR> "("
+              ( LOOKAHEAD(storage() type() <IDENTIFIER>)
+                initDecls=defvars_body()
+              | [init=expr()]
+              )
+              ";"
               [cond=expr()] ";"
               [incr=expr()] ")" body=stmt()
         {
-            return new ForNode(location(t), init, cond, incr, body);
+            ForNode forNode = new ForNode(location(t), init, cond, incr, body);
+            if (initDecls == null) {
+                return forNode;
+            }
+            List<StmtNode> blockStmts = new ArrayList<StmtNode>();
+            for (DefinedVariable v : initDecls) {
+                if (v.hasInitializer()) {
+                    blockStmts.add(new DefvarNode(v));
+                }
+            }
+            blockStmts.add(forNode);
+            return new BlockNode(location(t), initDecls, blockStmts);
         }
 }
 

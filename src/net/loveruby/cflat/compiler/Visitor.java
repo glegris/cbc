@@ -42,6 +42,14 @@ abstract public class Visitor implements ASTVisitor<Void, Void> {
         return null;
     }
 
+    public Void visit(DefvarNode node) {
+        // The declared variable's initializer is already visited via the
+        // enclosing BlockNode's variables() list (see visit(BlockNode)
+        // above); this node only marks *where* it runs at IR generation
+        // time, which none of this class's subclasses care about.
+        return null;
+    }
+
     public Void visit(ExprStmtNode node) {
         visitExpr(node.expr());
         return null;
