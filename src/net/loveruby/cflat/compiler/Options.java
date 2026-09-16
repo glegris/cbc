@@ -345,6 +345,7 @@ class Options {
     void printUsage(PrintStream out) {
         out.println("Usage: cbc [options] file...");
         out.println("Global Options:");
+        out.println("  -E               Preprocesses only and quit.");
         out.println("  --check-syntax   Checks syntax and quit.");
         out.println("  --dump-tokens    Dumps tokens and quit.");
         // --dump-stmt is a hidden option.

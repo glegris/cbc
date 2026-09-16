@@ -30,6 +30,10 @@ public class LibraryLoader {
         loadPath.add(path);
     }
 
+    public List<String> loadPath() {
+        return loadPath;
+    }
+
     public Declarations loadLibrary(String libid, ErrorHandler handler)
             throws CompileException {
         if (loadingLibraries.contains(libid)) {

@@ -4,6 +4,7 @@ import java.util.Map;
 import java.util.HashMap;
 
 enum CompilerMode {
+    PreprocessOnly ("-E"),
     CheckSyntax ("--check-syntax"),
     DumpTokens ("--dump-tokens"),
     DumpAST ("--dump-ast"),
@@ -21,6 +22,7 @@ enum CompilerMode {
     static private Map<String, CompilerMode> modes;
     static {
         modes = new HashMap<String, CompilerMode>();
+        modes.put("-E", PreprocessOnly);
         modes.put("--check-syntax", CheckSyntax);
         modes.put("--dump-tokens", DumpTokens);
         modes.put("--dump-ast", DumpAST);

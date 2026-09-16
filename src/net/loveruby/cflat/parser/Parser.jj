@@ -59,19 +59,10 @@ public class Parser {
                                        ErrorHandler errorHandler,
                                        boolean debug)
                                        throws FileException {
-        try {
-            BufferedReader r =
-                new BufferedReader(
-                    new InputStreamReader(new FileInputStream(file),
-                                          SOURCE_ENCODING));
-            return new Parser(r, file.getPath(), loader, errorHandler, debug);
-        }
-        catch (FileNotFoundException ex) {
-            throw new FileException(ex.getMessage());
-        }
-        catch (UnsupportedEncodingException ex) {
-            throw new Error("UTF-8 is not supported??: " + ex.getMessage());
-        }
+        String src = new net.loveruby.cflat.cpp.Preprocessor(
+                loader.loadPath(), errorHandler).preprocessFile(file);
+        Reader r = new StringReader(src);
+        return new Parser(r, file.getPath(), loader, errorHandler, debug);
     }
     // #@@}
 

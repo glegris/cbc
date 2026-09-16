@@ -118,6 +118,46 @@ described below:
     `enum` above) still works exactly as before and takes priority when
     both could otherwise apply.
 
+## Preprocessor
+
+Every `.cb`/`.hb` file is now run through a real C-style preprocessor
+before it reaches the parser, on both backends. It's a token-based pass
+(not raw text substitution), so it gets macro-argument handling, `#`/`##`
+and recursive macro expansion right rather than approximately right:
+
+  * **Object-like and function-like macros**: `#define VERSION 42` and
+    `#define ADD(a, b) ((a) + (b))`. Arguments are macro-expanded before
+    substitution (unless adjacent to `#`/`##`), and a macro never expands
+    through its own invocation (directly or via another macro that calls
+    back into it), so `#define X X + 1` just adds one `X` to the output
+    instead of looping forever. `#undef` removes a definition.
+  * **Stringification and token pasting**: `#define STR(x) #x` and
+    `#define CONCAT(a, b) a ## b`, per C99 semantics (escaping embedded
+    `"`/`\` when stringifying, retokenizing the pasted result).
+  * **Conditional compilation**: `#ifdef`/`#ifndef`/`#if`/`#elif`/`#else`/
+    `#endif`, with `#if`/`#elif` backed by a real constant-expression
+    evaluator supporting the full C operator set (arithmetic, bitwise,
+    logical, comparison, shifts, `?:`, `defined(NAME)`/`defined NAME`) at
+    the usual precedence.
+  * **`#include "..."`/`#include <...>`**, searched next to the including
+    file (quoted form only) and then on the same `-I` path used for
+    `import`; `#error "message"` aborts the compile with that message,
+    and `#pragma` is accepted and silently ignored.
+  * **`-E`**: prints the preprocessed output and stops, like `gcc -E`,
+    for inspecting/debugging macro expansion independent of the rest of
+    the pipeline.
+
+Not supported, scoped out: variadic macros (`...`/`__VA_ARGS__`),
+predefined macros (`__LINE__`, `__FILE__`, `__DATE__`, ...), `#line`, and
+spreading one function-like macro call across multiple lines (the whole
+argument list must be on one logical line, after backslash-newline
+splicing). Every source line still produces exactly one output line so
+that error messages elsewhere in the compiler keep pointing at the right
+line, except across an `#include`: the included file's lines are spliced
+in inline, so line numbers in the including file *after* the `#include`
+shift by however many lines that added (there's no `#line`-style fixup
+for it).
+
 ## JVM backend (`-arch=jvm`)
 
 In addition to native x86 assembly, cbc can compile a cflat source file

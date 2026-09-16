@@ -34,6 +34,9 @@ public class Compiler {
         if (opts.mode() == CompilerMode.CheckSyntax) {
             System.exit(checkSyntax(opts) ? 0 : 1);
         }
+        if (opts.mode() == CompilerMode.PreprocessOnly) {
+            System.exit(preprocessOnly(opts) ? 0 : 1);
+        }
         try {
             List<SourceFile> srcs = opts.sourceFiles();
             build(srcs, opts);
@@ -65,6 +68,28 @@ public class Compiler {
             }
             else {
                 System.out.println(src.path() + ": Syntax Error");
+                failed = true;
+            }
+        }
+        return !failed;
+    }
+
+    private boolean preprocessOnly(Options opts) {
+        boolean failed = false;
+        for (SourceFile src : opts.sourceFiles()) {
+            try {
+                String result = new net.loveruby.cflat.cpp.Preprocessor(
+                        opts.loader().loadPath(), errorHandler)
+                        .preprocessFile(new File(src.path()));
+                if (errorHandler.errorOccured()) {
+                    failed = true;
+                }
+                else {
+                    System.out.print(result);
+                }
+            }
+            catch (FileException ex) {
+                errorHandler.error(ex.getMessage());
                 failed = true;
             }
         }
