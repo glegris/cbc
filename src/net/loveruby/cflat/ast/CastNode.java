@@ -30,6 +30,15 @@ public class CastNode extends ExprNode {
     public boolean isAssignable() { return expr.isAssignable(); }
 
     public boolean isEffectiveCast() {
+        if (type().isFloat() || expr.type().isFloat()) {
+            // A conversion to/from a floating type is never a no-op
+            // bit-reinterpretation, regardless of the two types'
+            // relative sizes -- unlike a plain integer narrowing/
+            // widening, where same-or-smaller size alone means the
+            // underlying bits already mean the same thing and no real
+            // instruction is needed.
+            return ! type().isSameType(expr.type());
+        }
         return type().size() > expr.type().size();
     }
 

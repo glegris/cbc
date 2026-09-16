@@ -32,6 +32,10 @@ public class Dumper {
         printPair(name, "" + memb);
     }
 
+    public void printMember(String name, double memb) {
+        printPair(name, "" + memb);
+    }
+
     public void printMember(String name, boolean memb) {
         printPair(name, "" + memb);
     }

@@ -755,6 +755,10 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
         return new Int(asmType(node.type()), node.value());
     }
 
+    public Expr visit(FloatLiteralNode node) {
+        return new Flo(asmType(node.type()), node.value());
+    }
+
     public Expr visit(StringLiteralNode node) {
         return new Str(asmType(node.type()), node.entry());
     }
@@ -823,8 +827,11 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
     // #@@}
 
     // #@@range/imm{
-    private Int imm(Type operandType, long n) {
-        if (operandType.isPointer()) {
+    private Expr imm(Type operandType, long n) {
+        if (operandType.isFloat()) {
+            return new Flo(asmType(operandType), (double)n);
+        }
+        else if (operandType.isPointer()) {
             return new Int(ptrdiff_t(), n);
         }
         else {
@@ -846,6 +853,7 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
         // convention, e.g. a hidden pointer -- see sysdep/jvm), so use
         // the pointer width as a stand-in.
         if (t.isStruct() || t.isUnion()) return ptr_t();
+        if (t.isFloat()) return net.loveruby.cflat.asm.Type.getFloat(t.size());
         return net.loveruby.cflat.asm.Type.get(t.size());
     }
 
@@ -853,6 +861,7 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
         if (! t.isScalar()) {
             return null;
         }
+        if (t.isFloat()) return net.loveruby.cflat.asm.Type.getFloat(t.size());
         return net.loveruby.cflat.asm.Type.get(t.size());
     }
 

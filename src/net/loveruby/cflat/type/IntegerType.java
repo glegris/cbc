@@ -38,11 +38,11 @@ public class IntegerType extends Type {
     }
 
     public boolean isCompatible(Type other) {
-        return (other.isInteger() && size <= other.size());
+        return (other.isInteger() && size <= other.size()) || other.isFloat();
     }
 
     public boolean isCastableTo(Type target) {
-        return (target.isInteger() || target.isPointer());
+        return (target.isInteger() || target.isPointer() || target.isFloat());
     }
 
     public long size() {

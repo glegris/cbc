@@ -13,6 +13,7 @@ public abstract class Type {
     public boolean isVoid() { return false; }
     public boolean isInt() { return false; }
     public boolean isInteger() { return false; }
+    public boolean isFloat() { return false; }
     public boolean isSigned()
             { throw new Error("#isSigned for non-integer type"); }
     public boolean isPointer() { return false; }
@@ -39,6 +40,7 @@ public abstract class Type {
 
     // Cast methods
     public IntegerType getIntegerType() { return (IntegerType)this; }
+    public FloatType getFloatType() { return (FloatType)this; }
     public PointerType getPointerType() { return (PointerType)this; }
     public FunctionType getFunctionType() { return (FunctionType)this; }
     public StructType getStructType() { return (StructType)this; }

@@ -195,7 +195,17 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator,
     /** Generates immediate values for .data section */
     // #@@range/generateImmediate{
     private void generateImmediate(AssemblyCode file, long size, Expr node) {
-        if (node instanceof Int) {
+        if (node.type() != null && node.type().isFloat()) {
+            errorHandler.error("floating-point global variable initializers are not "
+                    + "supported by the x86 backend yet (the JVM backend, -arch=jvm, "
+                    + "supports them)");
+            switch ((int)size) {
+            case 4: file._long(0);  break;
+            case 8: file._quad(0);  break;
+            default: throw new Error("entry size must be 1,2,4,8");
+            }
+        }
+        else if (node instanceof Int) {
             Int expr = (Int)node;
             switch ((int)size) {
             case 1: file._byte(expr.value());    break;
@@ -413,11 +423,25 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator,
                             + func.returnType());
             return;
         }
+        if (func.returnType().isFloat()) {
+            errorHandler.error(func.location(),
+                    "floating-point return types are not supported by the x86 "
+                            + "backend yet (the JVM backend, -arch=jvm, supports them): "
+                            + func.returnType());
+            return;
+        }
         for (CBCParameter param : func.parameters()) {
             if (isAggregate(param.type())) {
                 errorHandler.error(param.location(),
                         "passing a struct/union by value is not supported by the x86 "
                                 + "backend (the JVM backend, -arch=jvm, supports it): "
+                                + param.type());
+                return;
+            }
+            if (param.type().isFloat()) {
+                errorHandler.error(param.location(),
+                        "floating-point parameters are not supported by the x86 "
+                                + "backend yet (the JVM backend, -arch=jvm, supports them): "
                                 + param.type());
                 return;
             }
@@ -785,7 +809,22 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator,
             as.comment(n.getClass().getSimpleName() + " {");
             as.indentComment();
         }
-        n.accept(this);
+        // float/double have no codegen on this backend at all (no FPU/SSE
+        // instructions are ever emitted); catching it here, at the one
+        // choke point every expression passes through, is simpler and
+        // more complete than guarding every individual node type that
+        // could carry a floating value (Bin, Uni, Var, Int...). n.type()
+        // is null for a struct/union or bare-function-name Var (see
+        // IRGenerator#varType), which is never floating, hence the null
+        // check.
+        if (n.type() != null && n.type().isFloat()) {
+            errorHandler.error("floating-point types are not supported by the x86 "
+                    + "backend yet (the JVM backend, -arch=jvm, supports them)");
+            as.mov(imm(0), ax());
+        }
+        else {
+            n.accept(this);
+        }
         if (options.isVerboseAsm()) {
             as.unindentComment();
             as.comment("}");
@@ -980,6 +1019,14 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator,
         return null;
     }
     // #@@}
+
+    /** Unreachable in practice: compile(Expr) intercepts every floating
+     *  node before it would ever reach here (see its comment). Required
+     *  only to implement IRVisitor. */
+    public Void visit(Flo node) {
+        throw new Error("must not happen: Flo reached x86 CodeGenerator#visit "
+                + "(compile(Expr) should have intercepted it)");
+    }
 
     // #@@range/Str{
     public Void visit(Str node) {

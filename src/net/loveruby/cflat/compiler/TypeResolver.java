@@ -175,6 +175,11 @@ public class TypeResolver extends Visitor
         return null;
     }
 
+    public Void visit(FloatLiteralNode node) {
+        bindType(node.typeNode());
+        return null;
+    }
+
     public Void visit(StringLiteralNode node) {
         bindType(node.typeNode());
         return null;

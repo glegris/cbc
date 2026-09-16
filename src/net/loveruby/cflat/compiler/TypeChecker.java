@@ -241,11 +241,13 @@ class TypeChecker extends Visitor {
     public Void visit(BinaryOpNode node) {
         super.visit(node);
         if (node.operator().equals("+") || node.operator().equals("-")) {
-            expectsSameIntegerOrPointerDiff(node);
+            expectsSameArithmeticOrPointerDiff(node);
         }
         else if (node.operator().equals("*")
-                || node.operator().equals("/")
-                || node.operator().equals("%")
+                || node.operator().equals("/")) {
+            expectsSameArithmetic(node);
+        }
+        else if (node.operator().equals("%")
                 || node.operator().equals("&")
                 || node.operator().equals("|")
                 || node.operator().equals("^")
@@ -283,14 +285,14 @@ class TypeChecker extends Visitor {
     /**
      * For + and -, only following types of expression are valid:
      *
-     *   * integer + integer
+     *   * arithmetic (integer or float) + arithmetic
      *   * pointer + integer
      *   * integer + pointer
-     *   * integer - integer
+     *   * arithmetic - arithmetic
      *   * pointer - integer
      *   * pointer - pointer
      */
-    private void expectsSameIntegerOrPointerDiff(BinaryOpNode node) {
+    private void expectsSameArithmeticOrPointerDiff(BinaryOpNode node) {
         if (node.left().isPointer() && node.right().isPointer()) {
             if (node.operator().equals("+")) {
                 error(node, "invalid operation: pointer + pointer");
@@ -315,7 +317,7 @@ class TypeChecker extends Visitor {
             node.setType(node.right().type());
         }
         else {
-            expectsSameInteger(node);
+            expectsSameArithmetic(node);
         }
     }
 
@@ -329,7 +331,7 @@ class TypeChecker extends Visitor {
         }
     }
 
-    // +, -, *, /, %, &, |, ^, <<, >>
+    // %, &, |, ^, <<, >>
     // #@@range/expectsSameInteger{
     private void expectsSameInteger(BinaryOpNode node) {
         if (! mustBeInteger(node.left(), node.operator())) return;
@@ -337,6 +339,13 @@ class TypeChecker extends Visitor {
         arithmeticImplicitCast(node);
     }
     // #@@}
+
+    // +, -, *, / (integer or floating)
+    private void expectsSameArithmetic(BinaryOpNode node) {
+        if (! mustBeArithmetic(node.left(), node.operator())) return;
+        if (! mustBeArithmetic(node.right(), node.operator())) return;
+        arithmeticImplicitCast(node);
+    }
 
     // ==, !=, >, >=, <, <=, &&, ||
     private void expectsComparableScalars(BinaryOpNode node) {
@@ -373,8 +382,8 @@ class TypeChecker extends Visitor {
     // Processes usual arithmetic conversion for binary operations.
     // #@@range/arithmeticImplicitCast{
     private void arithmeticImplicitCast(BinaryOpNode node) {
-        Type r = integralPromotion(node.right().type());
-        Type l = integralPromotion(node.left().type());
+        Type r = arithPromotion(node.right().type());
+        Type l = arithPromotion(node.left().type());
         Type target = usualArithmeticConversion(l, r);
         if (! l.isSameType(target)) {
             // insert cast on left expr
@@ -393,6 +402,11 @@ class TypeChecker extends Visitor {
         super.visit(node);
         if (node.operator().equals("!")) {
             mustBeScalar(node.expr(), node.operator());
+        }
+        else if (node.operator().equals("-") || node.operator().equals("+")) {
+            // Unary +/- accept a float/double operand too (~ doesn't:
+            // bitwise-not is integer-only).
+            mustBeArithmetic(node.expr(), node.operator());
         }
         else {
             mustBeInteger(node.expr(), node.operator());
@@ -432,6 +446,12 @@ class TypeChecker extends Visitor {
                 node.setOpType(opType);
             }
             node.setAmount(1);
+        }
+        else if (node.expr().type().isFloat()) {
+            // No promotion for floating types (see arithPromotion); the
+            // amount itself is a floating 1.0, synthesized directly by
+            // IRGenerator (UnaryArithmeticOpNode#amount is an integer
+            // field and unused for this case).
         }
         else if (node.expr().type().isPointer()) {
             if (node.expr().type().baseType().isVoid()) {
@@ -532,6 +552,13 @@ class TypeChecker extends Visitor {
         }
     }
 
+    // Like integralPromotion, but a no-op for floating types (C99 does
+    // not promote float to double, or any float type to int, before an
+    // arithmetic operation -- only integers below int width get promoted).
+    private Type arithPromotion(Type t) {
+        return t.isFloat() ? t : integralPromotion(t);
+    }
+
     // Process integral promotion (integers only).
     // #@@range/integralPromotion{
     private Type integralPromotion(Type t) {
@@ -548,10 +575,14 @@ class TypeChecker extends Visitor {
     }
     // #@@}
 
-    // Usual arithmetic conversion for ILP32 platform (integers only).
-    // Size of l, r >= sizeof(int).
+    // Usual arithmetic conversion for ILP32 platform.
+    // Size of l, r >= sizeof(int) (for the integer case; arithPromotion
+    // leaves floating types untouched, so they can be any size here).
     // #@@range/usualArithmeticConversion{
     private Type usualArithmeticConversion(Type l, Type r) {
+        if (l.isFloat() || r.isFloat()) {
+            return usualArithmeticConversionFloat(l, r);
+        }
         Type s_int = typeTable.signedInt();
         Type u_int = typeTable.unsignedInt();
         Type s_long = typeTable.signedLong();
@@ -574,6 +605,18 @@ class TypeChecker extends Visitor {
         }
     }
     // #@@}
+
+    // If either operand is floating, the other is converted to the
+    // "wider" of the two floating types involved (an integer operand is
+    // simply treated as narrower than any floating type here).
+    private Type usualArithmeticConversionFloat(Type l, Type r) {
+        Type dbl = typeTable.doubleType();
+        if ((l.isFloat() && l.size() == dbl.size())
+                || (r.isFloat() && r.size() == dbl.size())) {
+            return dbl;
+        }
+        return typeTable.floatType();
+    }
 
     private boolean isInvalidStatementType(Type t) {
         // struct/union used to be rejected here, but passing/returning
@@ -609,6 +652,14 @@ class TypeChecker extends Visitor {
 
     private boolean mustBeInteger(ExprNode expr, String op) {
         if (! expr.type().isInteger()) {
+            wrongTypeError(expr, op);
+            return false;
+        }
+        return true;
+    }
+
+    private boolean mustBeArithmetic(ExprNode expr, String op) {
+        if (! expr.type().isInteger() && ! expr.type().isFloat()) {
             wrongTypeError(expr, op);
             return false;
         }

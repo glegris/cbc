@@ -167,6 +167,29 @@ public class Parser {
     }
     // #@@}
 
+    // #@@range/floatNode{
+    private FloatLiteralNode floatNode(Location loc, String image) {
+        if (image.endsWith("f") || image.endsWith("F")) {
+            return new FloatLiteralNode(loc, FloatTypeRef.floatRef(),
+                    floatValue(image));
+        }
+        else {
+            // A plain or "L"-suffixed floating constant is a double in
+            // C99 (there is no distinct "long double" type here; see the
+            // JVM backend's class comment for the current scope).
+            return new FloatLiteralNode(loc, FloatTypeRef.doubleRef(),
+                    floatValue(image));
+        }
+    }
+    // #@@}
+
+    // #@@range/floatValue{
+    private double floatValue(String image) {
+        String s = image.replaceFirst("[fFlL]$", "");
+        return Double.parseDouble(s);
+    }
+    // #@@}
+
     // #@@range/integerValue{
     private long integerValue(String image) {
         String s = image.replaceFirst("[UL]+", "");
@@ -301,6 +324,8 @@ TOKEN: {
     | <SHORT    : "short">
     | <INT      : "int">
     | <LONG     : "long">
+    | <FLOAT    : "float">
+    | <DOUBLE   : "double">
     | <STRUCT   : "struct">
     | <UNION    : "union">
     | <ENUM     : "enum">
@@ -341,6 +366,17 @@ TOKEN: {
             | "0" ["x", "X"] (["0"-"9", "a"-"f", "A"-"F"])+ ("U")? ("L")?
             | "0" (["0"-"7"])* ("U")? ("L")?
             >
+}
+// #@@}
+
+// floating-point literals
+// #@@range/lex_float{
+TOKEN: {
+    <FLOATLIT: (["0"-"9"])+ "." (["0"-"9"])* (<EXPONENT>)? (["f","F","l","L"])?
+             | "." (["0"-"9"])+ (<EXPONENT>)? (["f","F","l","L"])?
+             | (["0"-"9"])+ <EXPONENT> (["f","F","l","L"])?
+             >
+    | <#EXPONENT: ["e","E"] (["+","-"])? (["0"-"9"])+>
 }
 // #@@}
 
@@ -798,6 +834,8 @@ TypeRef typeref_base():
     | t=<SHORT>         { return IntegerTypeRef.shortRef(location(t)); }
     | t=<INT>           { return IntegerTypeRef.intRef(location(t)); }
     | t=<LONG>          { return IntegerTypeRef.longRef(location(t)); }
+    | t=<FLOAT>         { return FloatTypeRef.floatRef(location(t)); }
+    | t=<DOUBLE>        { return FloatTypeRef.doubleRef(location(t)); }
     | LOOKAHEAD(2) t=<UNSIGNED> <CHAR>
         { return IntegerTypeRef.ucharRef(location(t)); }
     | LOOKAHEAD(2) t=<UNSIGNED> <SHORT>
@@ -1313,6 +1351,10 @@ ExprNode primary():
       t=<INTEGER>
         {
             return integerNode(location(t), t.image);
+        }
+    | t=<FLOATLIT>
+        {
+            return floatNode(location(t), t.image);
         }
     | t=<CHARACTER>
         {

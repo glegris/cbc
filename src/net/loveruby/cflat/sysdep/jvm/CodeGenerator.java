@@ -548,6 +548,25 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         return "$call$" + funcDescriptor;
     }
 
+    private int loadOpcodeForDescriptor(char c) {
+        switch (c) {
+        case 'J': return LLOAD;
+        case 'F': return FLOAD;
+        case 'D': return DLOAD;
+        default:  return ILOAD;
+        }
+    }
+
+    private int returnOpcodeForDescriptor(char c) {
+        switch (c) {
+        case 'V': return RETURN;
+        case 'J': return LRETURN;
+        case 'F': return FRETURN;
+        case 'D': return DRETURN;
+        default:  return IRETURN;
+        }
+    }
+
     /** Emits, for one distinct function descriptor, a
      *  "(J<funcDescriptor's params>)<funcDescriptor's return>" method
      *  that looks its long id argument up in a lookup-switch over every
@@ -565,13 +584,13 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
 
         String params = funcDescriptor.substring(1, funcDescriptor.indexOf(')'));
         List<Integer> argSlots = new ArrayList<Integer>();
-        List<Boolean> argWide = new ArrayList<Boolean>();
+        List<Character> argChar = new ArrayList<Character>();
         int slot = 2;  // the id (long) occupies slots 0-1
         for (int i = 0; i < params.length(); i++) {
-            boolean wide = params.charAt(i) == 'J';
+            char c = params.charAt(i);
             argSlots.add(slot);
-            argWide.add(wide);
-            slot += wide ? 2 : 1;
+            argChar.add(c);
+            slot += (c == 'J' || c == 'D') ? 2 : 1;
         }
         char retChar = funcDescriptor.charAt(funcDescriptor.length() - 1);
 
@@ -593,11 +612,11 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         for (int c = 0; c < n; c++) {
             mv.visitLabel(labels[c]);
             for (int a = 0; a < argSlots.size(); a++) {
-                mv.visitVarInsn(argWide.get(a) ? LLOAD : ILOAD, argSlots.get(a));
+                mv.visitVarInsn(loadOpcodeForDescriptor(argChar.get(a)), argSlots.get(a));
             }
             mv.visitMethodInsn(INVOKESTATIC, className, ordered.get(c).name(),
                     funcDescriptor, false);
-            mv.visitInsn(retChar == 'V' ? RETURN : (retChar == 'J' ? LRETURN : IRETURN));
+            mv.visitInsn(returnOpcodeForDescriptor(retChar));
         }
         mv.visitLabel(dflt);
         mv.visitTypeInsn(NEW, "java/lang/IllegalStateException");
@@ -620,16 +639,17 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
     // Type widths
     //
 
-    /** The JVM-level category (int or long) a value must have at a
-     *  function boundary (parameter/return): the only two shapes an
+    /** The JVM-level category (int, long, float or double) a value must
+     *  have at a function boundary (parameter/return): the shapes an
      *  actual JVM method call can carry.  An array parameter decays to a
      *  pointer per C rules; a struct/union parameter/return is, per this
      *  backend's hidden-pointer convention (see the class doc), also
-     *  just an address. This is distinct from asmWidthOf(), which is the
-     *  *true* C width (down to 1 byte) used for every memory access once
-     *  a value is safely inside $mem. */
+     *  just an address (so always LONG, never FLOAT/DOUBLE). This is
+     *  distinct from asmWidthOf(), which is the *true* C width (down to
+     *  1 byte) used for every memory access once a value is safely
+     *  inside $mem. */
     private enum Width {
-        INT(1, "I"), LONG(2, "J");
+        INT(1, "I"), LONG(2, "J"), FLOAT(1, "F"), DOUBLE(2, "D");
 
         final int slots;
         final String descriptor;
@@ -644,6 +664,9 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         if (t.isArray() || isAggregate(t)) {
             return Width.LONG;  // arrays decay to a pointer; struct/union are passed by address
         }
+        if (t.isFloat()) {
+            return (t.size() == 8) ? Width.DOUBLE : Width.FLOAT;
+        }
         return (t.size() == 8) ? Width.LONG : Width.INT;
     }
 
@@ -656,11 +679,25 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         if (!t.isScalar()) {
             return net.loveruby.cflat.asm.Type.INT64;  // already reported elsewhere; safe fallback
         }
+        if (t.isFloat()) {
+            return net.loveruby.cflat.asm.Type.getFloat(t.size());
+        }
         return net.loveruby.cflat.asm.Type.get(t.size());
     }
 
+    /** Whether a value of this type occupies two JVM stack/local slots
+     *  rather than one -- true for both "long" and "double", which is
+     *  exactly the same grouping this backend already needs for stack
+     *  bookkeeping (POP2 vs POP, a 2-slot local, ...) regardless of
+     *  whether the two "wide" categories are otherwise interchangeable
+     *  (they are not: see coerceWidth). */
     private static boolean isWide(net.loveruby.cflat.asm.Type t) {
-        return t == net.loveruby.cflat.asm.Type.INT64;
+        return t == net.loveruby.cflat.asm.Type.INT64
+                || t == net.loveruby.cflat.asm.Type.FLOAT64;
+    }
+
+    private static boolean isDouble(net.loveruby.cflat.asm.Type t) {
+        return t == net.loveruby.cflat.asm.Type.FLOAT64;
     }
 
     private static boolean isComparison(Op op) {
@@ -851,9 +888,17 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                 pushBuf();
                 pushAddressOf(p);
                 mv.visitInsn(L2I);
-                mv.visitVarInsn(paramWidths.get(i) == Width.LONG ? LLOAD : ILOAD,
-                        paramJvmSlots.get(i));
+                mv.visitVarInsn(loadOpcodeForWidth(paramWidths.get(i)), paramJvmSlots.get(i));
                 emitStore(asmWidthOf(p.type()));
+            }
+        }
+
+        private int loadOpcodeForWidth(Width w) {
+            switch (w) {
+            case LONG:   return LLOAD;
+            case FLOAT:  return FLOAD;
+            case DOUBLE: return DLOAD;
+            default:     return ILOAD;
             }
         }
 
@@ -862,9 +907,9 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             // C's undefined behavior with a well-defined 0, and gives the
             // epilogue a value to load unconditionally).
             if (!func.isVoid()) {
-                boolean wide = isWide(asmWidthOf(func.returnType()));
-                mv.visitInsn(wide ? LCONST_0 : ICONST_0);
-                mv.visitVarInsn(wide ? LSTORE : ISTORE, returnValueSlot);
+                net.loveruby.cflat.asm.Type t = asmWidthOf(func.returnType());
+                mv.visitInsn(zeroConstOpcode(t));
+                mv.visitVarInsn(storeOpcode(t), returnValueSlot);
             }
             mv.visitLabel(epilogueLabel);
             // $sp = frameBase + frameSize
@@ -876,9 +921,9 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                 mv.visitInsn(RETURN);
             }
             else {
-                boolean wide = isWide(asmWidthOf(func.returnType()));
-                mv.visitVarInsn(wide ? LLOAD : ILOAD, returnValueSlot);
-                mv.visitInsn(wide ? LRETURN : IRETURN);
+                net.loveruby.cflat.asm.Type t = asmWidthOf(func.returnType());
+                mv.visitVarInsn(loadOpcode(t), returnValueSlot);
+                mv.visitInsn(returnOpcode(t));
             }
         }
 
@@ -917,7 +962,7 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         }
 
         private void pushDummy(net.loveruby.cflat.asm.Type t) {
-            mv.visitInsn(isWide(t) ? LCONST_0 : ICONST_0);
+            mv.visitInsn(zeroConstOpcode(t));
         }
 
         private void popValue(net.loveruby.cflat.asm.Type t) {
@@ -927,6 +972,90 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         private void coerceToInt(net.loveruby.cflat.asm.Type t) {
             if (isWide(t)) {
                 mv.visitInsn(L2I);
+            }
+        }
+
+        //
+        // Small per-category opcode pickers, used everywhere a local
+        // variable slot, constant zero, or method return has to be
+        // emitted generically over all four JVM value categories this
+        // backend deals in (int, long, float, double).
+        //
+
+        private int zeroConstOpcode(net.loveruby.cflat.asm.Type t) {
+            if (t.isFloat()) {
+                return isDouble(t) ? DCONST_0 : FCONST_0;
+            }
+            return isWide(t) ? LCONST_0 : ICONST_0;
+        }
+
+        private int loadOpcode(net.loveruby.cflat.asm.Type t) {
+            if (t.isFloat()) {
+                return isDouble(t) ? DLOAD : FLOAD;
+            }
+            return isWide(t) ? LLOAD : ILOAD;
+        }
+
+        private int storeOpcode(net.loveruby.cflat.asm.Type t) {
+            if (t.isFloat()) {
+                return isDouble(t) ? DSTORE : FSTORE;
+            }
+            return isWide(t) ? LSTORE : ISTORE;
+        }
+
+        private int returnOpcode(net.loveruby.cflat.asm.Type t) {
+            if (t.isFloat()) {
+                return isDouble(t) ? DRETURN : FRETURN;
+            }
+            return isWide(t) ? LRETURN : IRETURN;
+        }
+
+        /** Coerces a just-compiled value from its actual category to the
+         *  one an operation needs, e.g. because IRGenerator's own
+         *  internal lowering sometimes combines operands of different
+         *  widths directly (see coerceWidth's other call sites), or --
+         *  for float/double specifically -- because TypeChecker's
+         *  OpAssignNode handling only ever casts the RHS to match, never
+         *  the LHS (see TypeChecker#visit(OpAssignNode)), so e.g.
+         *  "float f; double d; f += d;" can reach here needing an
+         *  implicit double->float narrowing on one side of the Bin. */
+        private void coerceWidth(net.loveruby.cflat.asm.Type actual,
+                net.loveruby.cflat.asm.Type wanted) {
+            if (actual == wanted) {
+                return;
+            }
+            boolean actualFloat = actual.isFloat();
+            boolean wantedFloat = wanted.isFloat();
+            if (actualFloat && wantedFloat) {
+                mv.visitInsn(isDouble(wanted) ? F2D : D2F);
+            }
+            else if (!actualFloat && !wantedFloat) {
+                if (isWide(wanted) && !isWide(actual)) {
+                    mv.visitInsn(I2L);
+                }
+                else if (!isWide(wanted) && isWide(actual)) {
+                    mv.visitInsn(L2I);
+                }
+            }
+            else if (wantedFloat) {
+                // int/long -> float/double (always signed: TypeChecker
+                // never lets an unsigned-vs-float mismatch reach here
+                // without an explicit CastNode already handling it).
+                if (isWide(actual)) {
+                    mv.visitInsn(isDouble(wanted) ? L2D : L2F);
+                }
+                else {
+                    mv.visitInsn(isDouble(wanted) ? I2D : I2F);
+                }
+            }
+            else {
+                // float/double -> int/long
+                if (isDouble(actual)) {
+                    mv.visitInsn(isWide(wanted) ? D2L : D2I);
+                }
+                else {
+                    mv.visitInsn(isWide(wanted) ? F2L : F2I);
+                }
             }
         }
 
@@ -1034,6 +1163,12 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             case INT64:
                 mv.visitMethodInsn(INVOKEVIRTUAL, BUF_CLASS, "getLong", "(I)J", false);
                 break;
+            case FLOAT32:
+                mv.visitMethodInsn(INVOKEVIRTUAL, BUF_CLASS, "getFloat", "(I)F", false);
+                break;
+            case FLOAT64:
+                mv.visitMethodInsn(INVOKEVIRTUAL, BUF_CLASS, "getDouble", "(I)D", false);
+                break;
             }
         }
 
@@ -1059,6 +1194,14 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                 break;
             case INT64:
                 mv.visitMethodInsn(INVOKEVIRTUAL, BUF_CLASS, "putLong", "(IJ)" + BUF_DESC, false);
+                mv.visitInsn(POP);
+                break;
+            case FLOAT32:
+                mv.visitMethodInsn(INVOKEVIRTUAL, BUF_CLASS, "putFloat", "(IF)" + BUF_DESC, false);
+                mv.visitInsn(POP);
+                break;
+            case FLOAT64:
+                mv.visitMethodInsn(INVOKEVIRTUAL, BUF_CLASS, "putDouble", "(ID)" + BUF_DESC, false);
                 mv.visitInsn(POP);
                 break;
             }
@@ -1158,7 +1301,7 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             }
             mv.visitInsn(L2I);
             compile(node.rhs());
-            coerceWidth(resultWidth(node.rhs()), isWide(storeWidth));
+            coerceWidth(resultWidth(node.rhs()), storeWidth);
             emitStore(storeWidth);
             return null;
         }
@@ -1167,7 +1310,12 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             compile(node.cond());
             org.objectweb.asm.Label thenLabel = getLabel(node.thenLabel());
             org.objectweb.asm.Label elseLabel = getLabel(node.elseLabel());
-            if (isWide(resultWidth(node.cond()))) {
+            net.loveruby.cflat.asm.Type condT = resultWidth(node.cond());
+            if (condT.isFloat()) {
+                mv.visitInsn(zeroConstOpcode(condT));
+                mv.visitInsn(isDouble(condT) ? DCMPL : FCMPL);
+            }
+            else if (isWide(condT)) {
                 mv.visitInsn(LCONST_0);
                 mv.visitInsn(LCMP);
             }
@@ -1214,7 +1362,7 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                 }
                 else {
                     compile(node.expr());
-                    mv.visitVarInsn(isWide(resultWidth(node.expr())) ? LSTORE : ISTORE, returnValueSlot);
+                    mv.visitVarInsn(storeOpcode(resultWidth(node.expr())), returnValueSlot);
                 }
             }
             mv.visitJumpInsn(GOTO, epilogueLabel);
@@ -1251,20 +1399,23 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             switch (op) {
             case ADD: case SUB: case MUL: case S_DIV: case S_MOD:
             case BIT_AND: case BIT_OR: case BIT_XOR: {
-                boolean wide = isWide(node.type());
+                net.loveruby.cflat.asm.Type t = node.type();
                 compile(node.left());
-                coerceWidth(resultWidth(node.left()), wide);
+                coerceWidth(resultWidth(node.left()), t);
                 compile(node.right());
-                coerceWidth(resultWidth(node.right()), wide);
-                emitArith(op, wide);
+                coerceWidth(resultWidth(node.right()), t);
+                emitArith(op, t);
                 break;
             }
             case U_DIV: case U_MOD: {
+                // Never float: TypeChecker only ever produces U_DIV/U_MOD
+                // for unsigned integers (FloatType#isSigned() is always
+                // true), so plain isWide() is enough here.
                 boolean wide = isWide(node.type());
                 compile(node.left());
-                coerceWidth(resultWidth(node.left()), wide);
+                coerceWidth(resultWidth(node.left()), node.type());
                 compile(node.right());
-                coerceWidth(resultWidth(node.right()), wide);
+                coerceWidth(resultWidth(node.right()), node.type());
                 String owner = wide ? "java/lang/Long" : "java/lang/Integer";
                 String desc = wide ? "(JJ)J" : "(II)I";
                 String name = (op == Op.U_DIV) ? "divideUnsigned" : "remainderUnsigned";
@@ -1272,9 +1423,10 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                 break;
             }
             case BIT_LSHIFT: case BIT_RSHIFT: case ARITH_RSHIFT: {
+                // Never float (shifts are integer-only in C99).
                 boolean wide = isWide(node.type());
                 compile(node.left());
-                coerceWidth(resultWidth(node.left()), wide);
+                coerceWidth(resultWidth(node.left()), node.type());
                 compile(node.right());
                 coerceToInt(resultWidth(node.right()));
                 int opcode;
@@ -1287,35 +1439,32 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                 break;
             }
             default: {
-                boolean operandWide = isWide(resultWidth(node.left()));
+                net.loveruby.cflat.asm.Type operandType = resultWidth(node.left());
                 compile(node.left());
                 compile(node.right());
-                coerceWidth(resultWidth(node.right()), operandWide);
-                emitComparison(op, operandWide);
+                coerceWidth(resultWidth(node.right()), operandType);
+                emitComparison(op, operandType);
                 break;
             }
             }
             return null;
         }
 
-        /** Widens/narrows a just-compiled value from its actual width to
-         *  match what the operation using it needs. IRGenerator's own
-         *  internal lowering (e.g. the element-size*index multiplication
-         *  built for array indexing) sometimes combines operands of
-         *  different widths directly, unlike type-checked source
-         *  expressions (where both sides of a binary op are always cast
-         *  to a common type already). */
-        private void coerceWidth(net.loveruby.cflat.asm.Type actual, boolean wantWide) {
-            boolean actualWide = isWide(actual);
-            if (wantWide && !actualWide) {
-                mv.visitInsn(I2L);
+        private void emitArith(Op op, net.loveruby.cflat.asm.Type t) {
+            if (t.isFloat()) {
+                boolean dbl = isDouble(t);
+                int opcode;
+                switch (op) {
+                case ADD:   opcode = dbl ? DADD : FADD; break;
+                case SUB:   opcode = dbl ? DSUB : FSUB; break;
+                case MUL:   opcode = dbl ? DMUL : FMUL; break;
+                case S_DIV: opcode = dbl ? DDIV : FDIV; break;
+                default: throw new Error("unreachable float op: " + op);
+                }
+                mv.visitInsn(opcode);
+                return;
             }
-            else if (!wantWide && actualWide) {
-                mv.visitInsn(L2I);
-            }
-        }
-
-        private void emitArith(Op op, boolean wide) {
+            boolean wide = isWide(t);
             int opcode;
             switch (op) {
             case ADD:     opcode = wide ? LADD : IADD; break;
@@ -1331,7 +1480,12 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             mv.visitInsn(opcode);
         }
 
-        private void emitComparison(Op op, boolean wide) {
+        private void emitComparison(Op op, net.loveruby.cflat.asm.Type operandType) {
+            if (operandType.isFloat()) {
+                emitFloatComparison(op, isDouble(operandType));
+                return;
+            }
+            boolean wide = isWide(operandType);
             org.objectweb.asm.Label trueLabel = new org.objectweb.asm.Label();
             org.objectweb.asm.Label endLabel = new org.objectweb.asm.Label();
             int jumpOpcode;
@@ -1373,6 +1527,34 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             mv.visitLabel(endLabel);
         }
 
+        /** Float/double comparisons: FCMPG/DCMPG (NaN -> +1) must be used
+         *  for "<"/"<=" and FCMPL/DCMPL (NaN -> -1) for everything else,
+         *  so that any comparison against NaN correctly evaluates to
+         *  false (except "!="), matching C99's "unordered" semantics --
+         *  using the same *CMPL variant for every operator (as a naive
+         *  reading of "just compare and jump" would) silently gets "<"
+         *  and "<=" backwards whenever NaN is involved. */
+        private void emitFloatComparison(Op op, boolean dbl) {
+            org.objectweb.asm.Label trueLabel = new org.objectweb.asm.Label();
+            org.objectweb.asm.Label endLabel = new org.objectweb.asm.Label();
+            int jumpOpcode;
+            switch (op) {
+            case EQ:     mv.visitInsn(dbl ? DCMPL : FCMPL); jumpOpcode = IFEQ; break;
+            case NEQ:    mv.visitInsn(dbl ? DCMPL : FCMPL); jumpOpcode = IFNE; break;
+            case S_GT:   mv.visitInsn(dbl ? DCMPL : FCMPL); jumpOpcode = IFGT; break;
+            case S_GTEQ: mv.visitInsn(dbl ? DCMPL : FCMPL); jumpOpcode = IFGE; break;
+            case S_LT:   mv.visitInsn(dbl ? DCMPG : FCMPG); jumpOpcode = IFLT; break;
+            case S_LTEQ: mv.visitInsn(dbl ? DCMPG : FCMPG); jumpOpcode = IFLE; break;
+            default: throw new Error("unknown float comparison: " + op);
+            }
+            mv.visitJumpInsn(jumpOpcode, trueLabel);
+            mv.visitInsn(ICONST_0);
+            mv.visitJumpInsn(GOTO, endLabel);
+            mv.visitLabel(trueLabel);
+            mv.visitInsn(ICONST_1);
+            mv.visitLabel(endLabel);
+        }
+
         private int signedZeroOpcode(Op op) {
             switch (op) {
             case EQ:     return IFEQ;
@@ -1398,9 +1580,14 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         public Void visit(Uni node) {
             switch (node.op()) {
             case UMINUS: {
-                boolean wide = isWide(node.type());
+                net.loveruby.cflat.asm.Type t = node.type();
                 compile(node.expr());
-                mv.visitInsn(wide ? LNEG : INEG);
+                if (t.isFloat()) {
+                    mv.visitInsn(isDouble(t) ? DNEG : FNEG);
+                }
+                else {
+                    mv.visitInsn(isWide(t) ? LNEG : INEG);
+                }
                 break;
             }
             case BIT_NOT: {
@@ -1417,11 +1604,15 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                 break;
             }
             case NOT: {
-                boolean wide = isWide(node.expr().type());
+                net.loveruby.cflat.asm.Type t = resultWidth(node.expr());
                 compile(node.expr());
                 org.objectweb.asm.Label trueLabel = new org.objectweb.asm.Label();
                 org.objectweb.asm.Label endLabel = new org.objectweb.asm.Label();
-                if (wide) {
+                if (t.isFloat()) {
+                    mv.visitInsn(zeroConstOpcode(t));
+                    mv.visitInsn(isDouble(t) ? DCMPL : FCMPL);
+                }
+                else if (isWide(t)) {
                     mv.visitInsn(LCONST_0);
                     mv.visitInsn(LCMP);
                 }
@@ -1444,9 +1635,15 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
 
         private void compileCast(Uni node) {
             compile(node.expr());
-            int srcSize = node.expr().type().size();
-            int dstSize = node.type().size();
+            net.loveruby.cflat.asm.Type srcT = resultWidth(node.expr());
+            net.loveruby.cflat.asm.Type dstT = node.type();
             boolean srcSigned = (node.op() == Op.S_CAST);
+            if (srcT.isFloat() || dstT.isFloat()) {
+                compileFloatCast(srcT, dstT, srcSigned);
+                return;
+            }
+            int srcSize = srcT.size();
+            int dstSize = dstT.size();
             if (srcSize == dstSize) {
                 return;
             }
@@ -1484,6 +1681,53 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                     truncateInt(dstSize, srcSigned);
                 }
                 return;
+            }
+        }
+
+        /** Handles every cast where either side is float/double: unlike
+         *  the pure-integer case above, the source's *declared* width
+         *  never matters below 32 bits (a narrow int is already sitting
+         *  on the stack as a full 32-bit JVM int by the time it reaches
+         *  here -- see emitLoad), so only three source shapes exist: a
+         *  32-bit JVM int, a JVM long, or the other float type. */
+        private void compileFloatCast(net.loveruby.cflat.asm.Type srcT,
+                net.loveruby.cflat.asm.Type dstT, boolean srcSigned) {
+            if (srcT.isFloat() && dstT.isFloat()) {
+                if (srcT != dstT) {
+                    mv.visitInsn(isDouble(dstT) ? F2D : D2F);
+                }
+                return;
+            }
+            if (dstT.isFloat()) {
+                // integer -> float/double
+                boolean dbl = isDouble(dstT);
+                if (isWide(srcT)) {
+                    mv.visitInsn(dbl ? L2D : L2F);
+                }
+                else if (srcSigned) {
+                    mv.visitInsn(dbl ? I2D : I2F);
+                }
+                else {
+                    // Unsigned 32-bit source: I2D/I2F alone would treat a
+                    // value with the top bit set as negative, so widen
+                    // through an unsigned long first (mirrors the plain
+                    // integer int->long cast a few lines up).
+                    mv.visitMethodInsn(INVOKESTATIC, "java/lang/Integer",
+                            "toUnsignedLong", "(I)J", false);
+                    mv.visitInsn(dbl ? L2D : L2F);
+                }
+                return;
+            }
+            // float/double -> integer
+            boolean srcDbl = isDouble(srcT);
+            if (isWide(dstT)) {
+                mv.visitInsn(srcDbl ? D2L : F2L);
+            }
+            else {
+                mv.visitInsn(srcDbl ? D2I : F2I);
+                if (dstT.size() < 4) {
+                    truncateInt((int) dstT.size(), srcSigned);
+                }
             }
         }
 
@@ -1734,6 +1978,10 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                     flushLiteral(literal);
                     argIndex = emitPrintString(args, argIndex);
                     break;
+                case 'f': case 'e': case 'g': case 'E': case 'G':
+                    flushLiteral(literal);
+                    argIndex = emitPrintFloat(args, argIndex);
+                    break;
                 default:
                     error("unsupported printf format specifier by the JVM backend: %" + spec);
                     mv.visitInsn(ICONST_0);
@@ -1809,6 +2057,24 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             return idx + 1;
         }
 
+        /** %f/%e/%g: prints the argument as a double (per C's own default
+         *  argument promotion, a float vararg always arrives as a
+         *  double). Field width and precision specifiers (e.g. "%.2f")
+         *  are not interpreted, same as this backend's existing %d/%s
+         *  handling. */
+        private int emitPrintFloat(List<Expr> args, int idx) {
+            if (idx >= args.size()) {
+                error("not enough arguments for printf format");
+                return idx;
+            }
+            Expr arg = args.get(idx);
+            loadSystemOut();
+            compile(arg);
+            coerceWidth(resultWidth(arg), net.loveruby.cflat.asm.Type.FLOAT64);
+            mv.visitMethodInsn(INVOKEVIRTUAL, "java/io/PrintStream", "print", "(D)V", false);
+            return idx + 1;
+        }
+
         public Void visit(Addr node) {
             pushAddressOf(node.entity());
             return null;
@@ -1857,6 +2123,16 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             }
             else {
                 mv.visitLdcInsn((int) node.value());
+            }
+            return null;
+        }
+
+        public Void visit(Flo node) {
+            if (isDouble(node.type())) {
+                mv.visitLdcInsn(node.value());
+            }
+            else {
+                mv.visitLdcInsn((float) node.value());
             }
             return null;
         }

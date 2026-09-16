@@ -119,6 +119,18 @@ C-style address space:
     file -- including one returning a struct/union by value. Only
     calling through a plain function-pointer variable is supported, not
     a more complex expression (an array element, a struct member, ...).
+  * **`float`/`double`**: variables, parameters, returns, globals,
+    struct/union members and array elements; arithmetic (`+ - * /`,
+    unary `-`), comparisons (including correct IEEE 754 "unordered"
+    NaN semantics -- any comparison against NaN is false except `!=`),
+    casts to/from integers and between `float`/`double`, `++`/`--`, and
+    `printf`'s `%f`/`%e`/`%g` (field width/precision specifiers, like
+    this backend's existing `%d`/`%s`, are not interpreted). This is a
+    JVM-only feature for now -- the x86 backend has no floating-point
+    codegen at all (no FPU/SSE instructions are ever emitted) and
+    rejects any use of `float`/`double` at code generation time instead
+    of miscompiling it. There is no `long double` (a plain or
+    `L`-suffixed floating constant is just a `double`).
 
 Remaining gaps: calling a function that isn't defined in the same source
 file is rejected, except for three libc intrinsics translated to real JVM

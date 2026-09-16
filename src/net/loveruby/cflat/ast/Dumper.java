@@ -36,6 +36,10 @@ public class Dumper {
         printPair(name, "" + n);
     }
 
+    public void printMember(String name, double n) {
+        printPair(name, "" + n);
+    }
+
     public void printMember(String name, boolean b) {
         printPair(name, "" + b);
     }

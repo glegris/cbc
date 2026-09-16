@@ -3,6 +3,7 @@
 package net.loveruby.cflat.parser;
 
 /** Token Manager Error. */
+@SuppressWarnings("all") 
 public class TokenMgrError extends Error
 {
 
@@ -106,7 +107,7 @@ public class TokenMgrError extends Error
     return("Lexical error at line " + //
           errorLine + ", column " + //
           errorColumn + ".  Encountered: " + //
-          (EOFSeen ? "<EOF>" : ("'" + addEscapes(String.valueOf(curChar)) + "' (" + curChar + "),")) + //
+          (EOFSeen ? "<EOF>" : ("'" + addEscapes(String.valueOf((char) curChar)) + "' (" + curChar + "),")) + //
           (errorAfter == null || errorAfter.length() == 0 ? "" : " after prefix \"" + addEscapes(errorAfter) + "\"")) + //
           (lexState == 0 ? "" : " (in lexical state " + lexState + ")");
   }
@@ -144,4 +145,4 @@ public class TokenMgrError extends Error
     this(LexicalErr(EOFSeen, lexState, errorLine, errorColumn, errorAfter, curChar), reason);
   }
 }
-/* JavaCC - OriginalChecksum=b7740b8dfc94833cc72629b246111afb (do not edit this line) */
+/* JavaCC - OriginalChecksum=4f0333c4847dfdf04176b38bf2ffa79b (do not edit this line) */

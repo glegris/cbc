@@ -16,5 +16,6 @@ public interface IRVisitor<S,E> {
     public E visit(Mem s);
     public E visit(Var s);
     public E visit(Int s);
+    public E visit(Flo s);
     public E visit(Str s);
 }

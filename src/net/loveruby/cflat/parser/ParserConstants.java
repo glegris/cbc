@@ -27,59 +27,67 @@ public interface ParserConstants {
   /** RegularExpression Id. */
   int LONG = 10;
   /** RegularExpression Id. */
-  int STRUCT = 11;
+  int FLOAT = 11;
   /** RegularExpression Id. */
-  int UNION = 12;
+  int DOUBLE = 12;
   /** RegularExpression Id. */
-  int ENUM = 13;
+  int STRUCT = 13;
   /** RegularExpression Id. */
-  int STATIC = 14;
+  int UNION = 14;
   /** RegularExpression Id. */
-  int EXTERN = 15;
+  int ENUM = 15;
   /** RegularExpression Id. */
-  int CONST = 16;
+  int STATIC = 16;
   /** RegularExpression Id. */
-  int SIGNED = 17;
+  int EXTERN = 17;
   /** RegularExpression Id. */
-  int UNSIGNED = 18;
+  int CONST = 18;
   /** RegularExpression Id. */
-  int IF = 19;
+  int SIGNED = 19;
   /** RegularExpression Id. */
-  int ELSE = 20;
+  int UNSIGNED = 20;
   /** RegularExpression Id. */
-  int SWITCH = 21;
+  int IF = 21;
   /** RegularExpression Id. */
-  int CASE = 22;
+  int ELSE = 22;
   /** RegularExpression Id. */
-  int DEFAULT_ = 23;
+  int SWITCH = 23;
   /** RegularExpression Id. */
-  int WHILE = 24;
+  int CASE = 24;
   /** RegularExpression Id. */
-  int DO = 25;
+  int DEFAULT_ = 25;
   /** RegularExpression Id. */
-  int FOR = 26;
+  int WHILE = 26;
   /** RegularExpression Id. */
-  int RETURN = 27;
+  int DO = 27;
   /** RegularExpression Id. */
-  int BREAK = 28;
+  int FOR = 28;
   /** RegularExpression Id. */
-  int CONTINUE = 29;
+  int RETURN = 29;
   /** RegularExpression Id. */
-  int GOTO = 30;
+  int BREAK = 30;
   /** RegularExpression Id. */
-  int TYPEDEF = 31;
+  int CONTINUE = 31;
   /** RegularExpression Id. */
-  int IMPORT = 32;
+  int GOTO = 32;
   /** RegularExpression Id. */
-  int SIZEOF = 33;
+  int TYPEDEF = 33;
   /** RegularExpression Id. */
-  int IDENTIFIER = 34;
+  int IMPORT = 34;
   /** RegularExpression Id. */
-  int INTEGER = 35;
+  int SIZEOF = 35;
   /** RegularExpression Id. */
-  int CHARACTER = 40;
+  int IDENTIFIER = 36;
   /** RegularExpression Id. */
-  int STRING = 45;
+  int INTEGER = 37;
+  /** RegularExpression Id. */
+  int FLOATLIT = 38;
+  /** RegularExpression Id. */
+  int EXPONENT = 39;
+  /** RegularExpression Id. */
+  int CHARACTER = 44;
+  /** RegularExpression Id. */
+  int STRING = 49;
 
   /** Lexical state. */
   int DEFAULT = 0;
@@ -105,6 +113,8 @@ public interface ParserConstants {
     "\"short\"",
     "\"int\"",
     "\"long\"",
+    "\"float\"",
+    "\"double\"",
     "\"struct\"",
     "\"union\"",
     "\"enum\"",
@@ -130,15 +140,17 @@ public interface ParserConstants {
     "\"sizeof\"",
     "<IDENTIFIER>",
     "<INTEGER>",
+    "<FLOATLIT>",
+    "<EXPONENT>",
     "\"\\\'\"",
-    "<token of kind 37>",
-    "<token of kind 38>",
-    "<token of kind 39>",
-    "\"\\\'\"",
-    "\"\\\"\"",
+    "<token of kind 41>",
     "<token of kind 42>",
     "<token of kind 43>",
-    "<token of kind 44>",
+    "\"\\\'\"",
+    "\"\\\"\"",
+    "<token of kind 46>",
+    "<token of kind 47>",
+    "<token of kind 48>",
     "\"\\\"\"",
     "\"(\"",
     "\".\"",

@@ -30,6 +30,10 @@ public class TypeTable {
                   new IntegerType(intsize, false, "unsigned int"));
         table.put(IntegerTypeRef.ulongRef(),
                   new IntegerType(longsize, false, "unsigned long"));
+        // float/double sizes are fixed by (the relevant parts of) IEEE 754
+        // regardless of the platform's int/long/pointer widths.
+        table.put(FloatTypeRef.floatRef(), new FloatType(4, "float"));
+        table.put(FloatTypeRef.doubleRef(), new FloatType(8, "double"));
         return table;
     }
 
@@ -176,6 +180,14 @@ public class TypeTable {
 
     public IntegerType unsignedLong() {
         return (IntegerType)table.get(IntegerTypeRef.ulongRef());
+    }
+
+    public FloatType floatType() {
+        return (FloatType)table.get(FloatTypeRef.floatRef());
+    }
+
+    public FloatType doubleType() {
+        return (FloatType)table.get(FloatTypeRef.doubleRef());
     }
 
     public PointerType pointerTo(Type baseType) {
