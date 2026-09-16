@@ -1,6 +1,8 @@
 package net.loveruby.cflat.sysdep.jvm;
 import net.loveruby.cflat.sysdep.BinaryAssemblyCode;
 import java.io.PrintStream;
+import java.util.Collections;
+import java.util.Set;
 
 /**
  * Wraps the bytes of a generated JVM class file.  There is no textual
@@ -11,14 +13,37 @@ import java.io.PrintStream;
 public class JVMAssemblyCode implements BinaryAssemblyCode {
     private final String className;
     private final byte[] bytes;
+    private final String nativeLibrarySource;
+    private final Set<String> nativeStubNames;
 
     public JVMAssemblyCode(String className, byte[] bytes) {
+        this(className, bytes, null, Collections.<String>emptySet());
+    }
+
+    /** nativeLibrarySource is the source of a "NativeLibrary.java" to
+     *  write alongside the class file (null if the program called no
+     *  external function needing one, the common case); nativeStubNames
+     *  is exactly the set of names it stubs out -- see
+     *  CodeGenerator#nativeLibrarySource() and NativeLibrary's own
+     *  generated class doc for what these are for. */
+    public JVMAssemblyCode(String className, byte[] bytes, String nativeLibrarySource,
+            Set<String> nativeStubNames) {
         this.className = className;
         this.bytes = bytes;
+        this.nativeLibrarySource = nativeLibrarySource;
+        this.nativeStubNames = nativeStubNames;
     }
 
     public byte[] toBytes() {
         return bytes;
+    }
+
+    public String nativeLibrarySource() {
+        return nativeLibrarySource;
+    }
+
+    public Set<String> nativeStubNames() {
+        return nativeStubNames;
     }
 
     public String toSource() {

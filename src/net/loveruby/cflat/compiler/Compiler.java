@@ -8,8 +8,11 @@ import net.loveruby.cflat.ir.IR;
 import net.loveruby.cflat.sysdep.CodeGenerator;
 import net.loveruby.cflat.sysdep.AssemblyCode;
 import net.loveruby.cflat.sysdep.BinaryAssemblyCode;
+import net.loveruby.cflat.sysdep.jvm.JVMAssemblyCode;
 import net.loveruby.cflat.utils.ErrorHandler;
 import net.loveruby.cflat.exception.*;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.*;
 import java.io.*;
 
@@ -147,6 +150,58 @@ public class Compiler {
             throw new SemanticException("compile failed.");
         }
         writeAssembly(destPath, asm);
+        writeNativeLibrarySource(destPath, asm);
+    }
+
+    /** JVM backend only: writes/updates "NativeLibrary.java" next to
+     *  destPath if the program called an external function needing a
+     *  stub (see CodeGenerator#nativeLibrarySource() for what "needing
+     *  one" means, and NativeLibrary's own generated class doc for the
+     *  overall mechanism). Never overwrites an existing file -- a
+     *  user's hand-written implementations in it must survive
+     *  recompiling the .cb file -- but does warn about any stub name
+     *  the existing file doesn't seem to define, since otherwise a
+     *  missing one only shows up as a NoSuchMethodError at run time. */
+    private void writeNativeLibrarySource(String destPath, AssemblyCode asm)
+            throws FileException {
+        if (!(asm instanceof JVMAssemblyCode)) {
+            return;
+        }
+        JVMAssemblyCode jvmAsm = (JVMAssemblyCode) asm;
+        String source = jvmAsm.nativeLibrarySource();
+        if (source == null) {
+            return;
+        }
+        File dir = new File(destPath).getAbsoluteFile().getParentFile();
+        File file = new File(dir, "NativeLibrary.java");
+        if (!file.exists()) {
+            writeFile(file.getPath(), source);
+            errorHandler.warn(file.getPath() + ": generated with stub(s) for "
+                    + jvmAsm.nativeStubNames() + " -- edit it to implement "
+                    + "them, then compile it with javac before running the "
+                    + "program");
+            return;
+        }
+        String existing;
+        try {
+            existing = new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
+        }
+        catch (IOException ex) {
+            errorHandler.warn(file.getPath() + ": could not check it for "
+                    + "missing native stubs: " + ex.getMessage());
+            return;
+        }
+        List<String> missing = new ArrayList<String>();
+        for (String name : jvmAsm.nativeStubNames()) {
+            if (!existing.contains(name)) {
+                missing.add(name);
+            }
+        }
+        if (!missing.isEmpty()) {
+            errorHandler.warn(file.getPath() + ": missing an implementation "
+                    + "for " + missing + " (not overwriting your existing "
+                    + "file -- add these to it by hand)");
+        }
     }
 
     public AST parseFile(String path, Options opts)

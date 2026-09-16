@@ -370,16 +370,55 @@ C-style address space:
     of miscompiling it. There is no `long double` (a plain or
     `L`-suffixed floating constant is just a `double`).
 
-Remaining gaps: calling a function that isn't defined in the same source
-file is rejected, except for three libc intrinsics translated to real JVM
-calls so printf-based programs work: `putchar(int)`, `puts(char*)` and
-`printf(char*, ...)` -- the format string itself must still be a
-compile-time literal, but `puts`/`%s` now accept any `char*` expression,
-not just literals. These three intrinsics have no real address either,
-so `&putchar` and friends are rejected too. Lastly, `long` and every
-pointer type are real 8-byte JVM `long`s here (see the class comment on
+Remaining gaps: `putchar(int)`, `puts(char*)` and `printf(char*, ...)` are
+compile-time intrinsics translated directly to real JVM calls (`printf`'s
+format string itself must still be a compile-time literal, though
+`puts`/`%s` accept any `char*` expression, not just literals) -- these
+three have no real address, so `&putchar` and friends are rejected. Any
+*other* external function (declared but not defined in the same source
+file) is handled by the extensible native-library mechanism below rather
+than being flatly rejected. Lastly, `long` and every pointer type are real
+8-byte JVM `long`s here (see the class comment on
 `sysdep/jvm/CodeGenerator.java`), so `sizeof(long)`/`sizeof(T*)` are 8,
 not 4 like on the (32-bit-only) x86 backend.
+
+### Calling external functions: StandardLibrary and NativeLibrary
+
+A call to a function declared (e.g. via `import`) but not defined in the
+same file -- anything other than the three intrinsics above -- compiles to
+a call to `NativeLibrary`, a small, human-readable `NativeLibrary.java`
+that `cbc` generates *as source*, next to the `.class` file, alongside the
+hand-written `net.loveruby.cflat.sysdep.jvm.runtime.StandardLibrary`:
+
+  * **`StandardLibrary`** is checked into cbc itself and shared by every
+    compiled program. Add a `public static` method there (matching the
+    JVM parameter/return types `CodeGenerator#buildDescriptor` maps a
+    cflat signature to: `int`/`long`/`float`/`double`) to make a function
+    available everywhere without regenerating anything.
+  * **`NativeLibrary`** is generated fresh per program, `extends
+    StandardLibrary`, and contains one stub -- throwing
+    `NotImplementedException` -- for each external function the program
+    calls that isn't already in `StandardLibrary` (checked by a plain
+    hardcoded name list in `CodeGenerator`, not reflection, so generating
+    it never needs `StandardLibrary` itself loaded or even built). Since
+    it extends `StandardLibrary`, the compiled program's `INVOKESTATIC
+    NativeLibrary.foo(...)` resolves correctly either way, without the
+    compiler needing to know which of the two classes actually
+    implements `foo`.
+
+Compiling a program that calls such a function always succeeds; only
+actually *calling* an unimplemented one fails, at run time, with
+`NotImplementedException` naming it -- edit the generated
+`NativeLibrary.java` by hand to implement it, then `javac` it before
+running the program. **`cbc` never overwrites an existing
+`NativeLibrary.java`** (your edits always survive recompiling the `.cb`
+file); if the program starts calling a function the existing file doesn't
+seem to define yet, that's reported as a warning naming it, not silently
+patched in or silently left to fail at run time as a `NoSuchMethodError`.
+
+This is JVM-only: the x86 backend links against real external symbols the
+normal way (`-lc`, `-lcbc`, ...), so it already handles an external
+function call natively and needs none of this.
 
 One structural limit: a cflat function compiles to exactly one JVM
 method, with no splitting, and a JVM method's bytecode is capped at
