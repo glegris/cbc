@@ -15,9 +15,14 @@ import java.util.List;
  *  Each element may carry a C99 designator (".member" or "[index]",
  *  recorded in members()/indices() -- null when absent), which sets
  *  where that element lands instead of the usual "next position after
- *  the previous element" -- see resolvePositions(). Only one designator
- *  per element, never chained/nested ("[i].member", ".a.b") and never
- *  both at once. */
+ *  the previous element" -- see resolvePositions(). This node itself
+ *  only ever stores one designator per element, never both at once: a
+ *  chained/nested source-level designator ("[i].member = x", ".a.b = x")
+ *  is desugared by the parser (Parser#buildAggregateLiteral) into a
+ *  synthetic nested AggregateLiteralNode at the outer designator's
+ *  position before this node is even built, so TypeChecker/IRGenerator
+ *  never have to know the difference from an explicitly-braced nested
+ *  literal. */
 public class AggregateLiteralNode extends ExprNode {
     protected Location location;
     protected List<ExprNode> elements;

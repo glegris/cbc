@@ -297,19 +297,173 @@ public class Parser {
     }
     // #@@}
 
-    /** One "{...}" element, with its optional C99 designator: ".member"
-     *  or "[index]" (at most one of the two, never both/chained -- see
-     *  AggregateLiteralNode's own doc comment for the supported scope). */
-    static class DesignatedElem {
-        String member;
-        Long index;
+    /** One step of a "{...}" element's C99 designator-list: either
+     *  ".member" or "[index]" (the array index already folded to a
+     *  compile-time constant -- see evalConstIndex()). A "{...}" element
+     *  can carry a whole chain of these ("[i].member = x", ".a.b = x"),
+     *  unlike the single member/index pair AggregateLiteralNode itself
+     *  stores per element -- buildAggregateLiteral() below desugars a
+     *  chain into nested, synthetic AggregateLiteralNode instances so
+     *  the rest of the compiler never has to know the difference. */
+    static abstract class Designator {
+        static final class Member extends Designator {
+            final String name;
+            Member(String name) { this.name = name; }
+            public boolean equals(Object o) {
+                return o instanceof Member && ((Member) o).name.equals(name);
+            }
+            public int hashCode() { return name.hashCode(); }
+        }
+        static final class Index extends Designator {
+            final long value;
+            Index(long value) { this.value = value; }
+            public boolean equals(Object o) {
+                return o instanceof Index && ((Index) o).value == value;
+            }
+            public int hashCode() { return Long.valueOf(value).hashCode(); }
+        }
+    }
+
+    /** One "{...}" element as written: its full designator path (empty
+     *  for a plain, undesignated element) and its value. */
+    static class RawDesignatedElem {
+        List<Designator> path;
         ExprNode value;
 
-        DesignatedElem(String member, Long index, ExprNode value) {
-            this.member = member;
-            this.index = index;
+        RawDesignatedElem(List<Designator> path, ExprNode value) {
+            this.path = path;
             this.value = value;
         }
+    }
+
+    /** Evaluates a "[...]" array-designator index to a compile-time
+     *  constant (C99 6.7.9p4 requires an "integer constant expression"
+     *  there, not just the bare literal this parser used to require).
+     *  Deliberately narrow -- literals plus the usual arithmetic/
+     *  bitwise/shift/relational/logical/conditional operators, nested
+     *  arbitrarily deep and folded right here at parse time -- rather
+     *  than a full constant-expression evaluator that also chases named
+     *  constants (an enum member, a "const" variable): those aren't
+     *  resolved to an actual value until well after parsing (see
+     *  LocalResolver), by which point this designator would already
+     *  need its final position to build the literal's element list. */
+    private long evalConstIndex(ExprNode e) throws ParseException {
+        if (e instanceof IntegerLiteralNode) {
+            return ((IntegerLiteralNode) e).value();
+        }
+        if (e instanceof UnaryOpNode) {
+            UnaryOpNode u = (UnaryOpNode) e;
+            long v = evalConstIndex(u.expr());
+            String op = u.operator();
+            if (op.equals("+")) return v;
+            if (op.equals("-")) return -v;
+            if (op.equals("~")) return ~v;
+            if (op.equals("!")) return (v == 0) ? 1 : 0;
+        }
+        else if (e instanceof BinaryOpNode) {
+            BinaryOpNode b = (BinaryOpNode) e;
+            long l = evalConstIndex(b.left());
+            long r = evalConstIndex(b.right());
+            String op = b.operator();
+            if (op.equals("+"))  return l + r;
+            if (op.equals("-"))  return l - r;
+            if (op.equals("*"))  return l * r;
+            if (op.equals("/"))  return l / r;
+            if (op.equals("%"))  return l % r;
+            if (op.equals("<<")) return l << r;
+            if (op.equals(">>")) return l >> r;
+            if (op.equals("&"))  return l & r;
+            if (op.equals("|"))  return l | r;
+            if (op.equals("^"))  return l ^ r;
+            if (op.equals("&&")) return (l != 0 && r != 0) ? 1 : 0;
+            if (op.equals("||")) return (l != 0 || r != 0) ? 1 : 0;
+            if (op.equals("==")) return (l == r) ? 1 : 0;
+            if (op.equals("!=")) return (l != r) ? 1 : 0;
+            if (op.equals("<"))  return (l <  r) ? 1 : 0;
+            if (op.equals(">"))  return (l >  r) ? 1 : 0;
+            if (op.equals("<=")) return (l <= r) ? 1 : 0;
+            if (op.equals(">=")) return (l >= r) ? 1 : 0;
+        }
+        else if (e instanceof CondExprNode) {
+            CondExprNode c = (CondExprNode) e;
+            return (evalConstIndex(c.cond()) != 0)
+                    ? evalConstIndex(c.thenExpr()) : evalConstIndex(c.elseExpr());
+        }
+        throw new ParseException("array index designator must be a compile-time "
+                + "integer constant expression (named constants like enum "
+                + "members or \"const\" variables are not supported there)");
+    }
+
+    /** Builds one "{...}" level's element list from its raw designated
+     *  elements, desugaring any chained designator ("[i].member = x",
+     *  ".a.b = x") into a synthetic nested AggregateLiteralNode so that
+     *  AggregateLiteralNode itself only ever has to represent a single
+     *  member-or-index designator per element (see resolvePositions()
+     *  there). Two elements sharing the same leading designator (e.g.
+     *  "[1].a = 1, [1].b = 2") are merged into one synthetic element at
+     *  that position; a later plain (unchained) designator for a
+     *  position already seen overwrites it outright, matching C99's own
+     *  "last designator for a spot wins" rule. */
+    private AggregateLiteralNode buildAggregateLiteral(Location loc,
+            List<RawDesignatedElem> raw) {
+        List<ExprNode> elems = new ArrayList<ExprNode>();
+        List<String> members = new ArrayList<String>();
+        List<Long> indices = new ArrayList<Long>();
+        Map<Designator, Integer> slotOf = new HashMap<Designator, Integer>();
+        Map<Designator, List<RawDesignatedElem>> pending
+                = new LinkedHashMap<Designator, List<RawDesignatedElem>>();
+
+        for (RawDesignatedElem e : raw) {
+            if (e.path.isEmpty()) {
+                elems.add(e.value);
+                members.add(null);
+                indices.add(null);
+                continue;
+            }
+            Designator head = e.path.get(0);
+            List<Designator> rest = e.path.subList(1, e.path.size());
+            Integer slot = slotOf.get(head);
+            if (rest.isEmpty()) {
+                if (slot == null) {
+                    slot = elems.size();
+                    elems.add(e.value);
+                    members.add((head instanceof Designator.Member)
+                            ? ((Designator.Member) head).name : null);
+                    indices.add((head instanceof Designator.Index)
+                            ? ((Designator.Index) head).value : null);
+                    slotOf.put(head, slot);
+                }
+                else {
+                    elems.set(slot, e.value);
+                }
+                pending.remove(head);
+            }
+            else {
+                List<RawDesignatedElem> sub = pending.get(head);
+                if (sub == null) {
+                    sub = new ArrayList<RawDesignatedElem>();
+                    pending.put(head, sub);
+                    if (slot == null) {
+                        slot = elems.size();
+                        elems.add(null);
+                        members.add((head instanceof Designator.Member)
+                                ? ((Designator.Member) head).name : null);
+                        indices.add((head instanceof Designator.Index)
+                                ? ((Designator.Index) head).value : null);
+                        slotOf.put(head, slot);
+                    }
+                    else {
+                        elems.set(slot, null);
+                    }
+                }
+                sub.add(new RawDesignatedElem(rest, e.value));
+            }
+        }
+        for (Map.Entry<Designator, List<RawDesignatedElem>> ent : pending.entrySet()) {
+            int slot = slotOf.get(ent.getKey());
+            elems.set(slot, buildAggregateLiteral(loc, ent.getValue()));
+        }
+        return new AggregateLiteralNode(loc, elems, members, indices);
     }
 }
 PARSER_END(Parser)
@@ -575,42 +729,44 @@ ExprNode initializer():
 AggregateLiteralNode aggregate_literal():
 {
     Token t;
-    List<ExprNode> elems = new ArrayList<ExprNode>();
-    List<String> members = new ArrayList<String>();
-    List<Long> indices = new ArrayList<Long>();
-    DesignatedElem d;
+    List<RawDesignatedElem> raw = new ArrayList<RawDesignatedElem>();
+    RawDesignatedElem d;
 }
 {
     t="{" d=designated_initializer()
-        { elems.add(d.value); members.add(d.member); indices.add(d.index); }
+        { raw.add(d); }
     ("," d=designated_initializer()
-        { elems.add(d.value); members.add(d.member); indices.add(d.index); }
+        { raw.add(d); }
     )*
     "}"
         {
-            return new AggregateLiteralNode(location(t), elems, members, indices);
+            return buildAggregateLiteral(location(t), raw);
         }
 }
 
-// A "{...}" element, optionally led by a C99 designator: ".member =" or
-// "[index] =" (the array index must be a plain integer literal -- a
-// general constant expression there isn't supported). Chained/nested
-// designators (".a.b =", "[i].a =") aren't supported either: only one
-// designator per element, always at that element's own top level.
-DesignatedElem designated_initializer():
+// A "{...}" element, optionally led by a C99 designator-list: one or
+// more ".member"/"[index]" steps (freely chained/nested, e.g.
+// "[i].member =", ".a.b ="), each "[index]" a general compile-time
+// integer constant expression (see evalConstIndex()) rather than just a
+// plain literal. buildAggregateLiteral() (called once the whole "{...}"
+// has been read, in aggregate_literal() above) desugars every element's
+// path down to the single member-or-index designator per level that
+// AggregateLiteralNode itself understands.
+RawDesignatedElem designated_initializer():
 {
     Token t;
-    String member = null;
-    Long index = null;
+    List<Designator> path = new ArrayList<Designator>();
+    ExprNode idx;
     ExprNode e;
 }
 {
-    ( "." t=<IDENTIFIER> { member = t.image; } "="
-    | "[" t=<INTEGER> { index = integerValue(t.image); } "]" "="
+    ( ( "." t=<IDENTIFIER> { path.add(new Designator.Member(t.image)); }
+      | "[" idx=expr10() "]" { path.add(new Designator.Index(evalConstIndex(idx))); }
+      )+ "="
     )?
     e=initializer()
         {
-            return new DesignatedElem(member, index, e);
+            return new RawDesignatedElem(path, e);
         }
 }
 // #@@}
