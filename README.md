@@ -276,9 +276,32 @@ and recursive macro expansion right rather than approximately right:
     through its own invocation (directly or via another macro that calls
     back into it), so `#define X X + 1` just adds one `X` to the output
     instead of looping forever. `#undef` removes a definition.
+  * **Variadic macros**: `#define LOG(fmt, ...) printf(fmt, __VA_ARGS__)`.
+    Calling one with zero trailing arguments (`LOG("hi")`) gives an empty
+    `__VA_ARGS__` rather than an error -- not strictly legal pre-C23
+    standard C, but the long-standing real-world GNU/Clang/MSVC behavior,
+    and needed for the companion GNU `, ##__VA_ARGS__` extension: `,
+    ##__VA_ARGS__` elides the preceding comma *and* itself whenever
+    `__VA_ARGS__` is empty (`#define LOG0(fmt, ...) printf(fmt,
+    ##__VA_ARGS__)`; `LOG0("hi")` -> `printf("hi")`, not `printf("hi",
+    )`), and is otherwise just `, __VA_ARGS__` with no real token-pasting
+    involved (`##` is never allowed to literally glue the comma onto the
+    first variadic token). Only the bare `...`/`__VA_ARGS__` form is
+    supported, not the GNU named-variadic extension (`args...`, referred
+    to by that name) or C23's `__VA_OPT__`.
   * **Stringification and token pasting**: `#define STR(x) #x` and
     `#define CONCAT(a, b) a ## b`, per C99 semantics (escaping embedded
     `"`/`\` when stringifying, retokenizing the pasted result).
+  * **Predefined macros**: `__LINE__`/`__FILE__` (the current line/file,
+    re-evaluated at each expansion site, honoring `#line` -- see below);
+    `__DATE__`/`__TIME__` (this compile's start time, fixed for the whole
+    run, in C99's own `"Mmm dd yyyy"`/`"hh:mm:ss"` formats); `__STDC__`
+    (`1`) and `__STDC_VERSION__` (`199901L`); and `__COUNTER__` (a GNU/
+    MSVC extension: expands to `0`, then `1`, then `2`, ... incrementing
+    on every use). Nothing identifies this compiler/platform/architecture
+    itself (no `__GNUC__`, `__unix__`, ...) -- cbc isn't gcc/clang, and
+    pretending otherwise would make real headers take branches this
+    compiler doesn't actually support.
   * **Conditional compilation**: `#ifdef`/`#ifndef`/`#if`/`#elif`/`#else`/
     `#endif`, with `#if`/`#elif` backed by a real constant-expression
     evaluator supporting the full C operator set (arithmetic, bitwise,
@@ -287,21 +310,29 @@ and recursive macro expansion right rather than approximately right:
   * **`#include "..."`/`#include <...>`**, searched next to the including
     file (quoted form only) and then on the same `-I` path used for
     `import`; `#error "message"` aborts the compile with that message,
-    and `#pragma` is accepted and silently ignored.
+    and `#pragma`/the equivalent `_Pragma("...")` operator are both
+    accepted and silently ignored (no pragma this compiler acts on).
+  * **`#line NUMBER ["FILENAME"]`**: adjusts what `__LINE__`/`__FILE__`
+    report from the next line onward. This is genuinely as far as it
+    goes: it can't redirect what the *rest* of the compiler itself
+    reports for a diagnostic (see the caveat below).
   * **`-E`**: prints the preprocessed output and stops, like `gcc -E`,
     for inspecting/debugging macro expansion independent of the rest of
     the pipeline.
 
-Not supported, scoped out: variadic macros (`...`/`__VA_ARGS__`),
-predefined macros (`__LINE__`, `__FILE__`, `__DATE__`, ...), `#line`, and
-spreading one function-like macro call across multiple lines (the whole
-argument list must be on one logical line, after backslash-newline
-splicing). Every source line still produces exactly one output line so
-that error messages elsewhere in the compiler keep pointing at the right
-line, except across an `#include`: the included file's lines are spliced
-in inline, so line numbers in the including file *after* the `#include`
-shift by however many lines that added (there's no `#line`-style fixup
-for it).
+Not supported, scoped out: the GNU named-variadic extension and
+`__VA_OPT__` (see above), compiler/platform-identifying predefined
+macros (also see above), and spreading one function-like macro call
+across multiple lines (the whole argument list must be on one logical
+line, after backslash-newline splicing). Every source line still
+produces exactly one output line so that error messages elsewhere in the
+compiler keep pointing at the right line, except across an `#include`:
+the included file's lines are spliced in inline, so line numbers in the
+including file *after* the `#include` shift by however many lines that
+added. `#line` corrects `__LINE__`/`__FILE__` for this, but -- same as
+`#include` -- has no way to correct what the rest of the compiler
+reports, since nothing downstream of the preprocessor knows anything
+beyond a line's position in the one, already-flattened text it receives.
 
 ## JVM backend (`-arch=jvm`)
 

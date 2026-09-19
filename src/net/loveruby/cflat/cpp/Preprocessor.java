@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
@@ -19,16 +20,25 @@ import java.util.regex.Pattern;
 
 /** A real (if scoped-down) C preprocessor, run as a text-to-text pass
  *  over a source file before it ever reaches the parser: object-like and
- *  function-like macros (#define/#undef, with # stringification and ##
- *  token pasting), conditional compilation (#ifdef/#ifndef/#if/#elif/
+ *  function-like macros (#define/#undef, with # stringification, ##
+ *  token pasting, variadic macros -- "..."/__VA_ARGS__, including the
+ *  GNU ", ##__VA_ARGS__" comma-elision extension -- and the predefined
+ *  __LINE__/__FILE__/__DATE__/__TIME__/__STDC__/__STDC_VERSION__/
+ *  __COUNTER__), conditional compilation (#ifdef/#ifndef/#if/#elif/
  *  #else/#endif, with a real constant-expression evaluator -- see
  *  PPExprEval), #include "..."/&lt;...&gt; (searched on the same -I path
- *  as "import"), backslash-newline line splicing, and #error/#pragma.
+ *  as "import"), backslash-newline line splicing, #line (see
+ *  handleLine's own doc comment for the one thing it doesn't do),
+ *  _Pragma(...), and #error/#pragma.
  *
- * Not supported, scoped out for size: variadic macros (... and
- * __VA_ARGS__), predefined macros (__LINE__, __FILE__, __DATE__, ...),
- * #line, and multi-line function-like macro invocations (a call's whole
- * argument list must be on one logical line, after splicing).
+ * Not supported, scoped out for size: the GNU named-variadic extension
+ * ("args..." instead of a bare "...", referred to by that name instead
+ * of __VA_ARGS__), C23's __VA_OPT__, any macro identifying this
+ * compiler/platform/architecture (__GNUC__, __unix__, ... -- cbc isn't
+ * gcc/clang, and pretending otherwise would make real headers take
+ * branches this compiler doesn't actually support), and multi-line
+ * function-like macro invocations (a call's whole argument list must be
+ * on one logical line, after splicing).
  *
  * Every input line becomes exactly one output line (a directive line, or
  * a suppressed line inside an inactive #if branch, becomes a blank
@@ -36,7 +46,11 @@ import java.util.regex.Pattern;
  * stay meaningful -- except across an #include, where the included
  * file's own lines are spliced in inline and everything in the
  * including file *after* the #include shifts by however many lines that
- * added; there is no #line-style mechanism to correct for it. */
+ * added. #line (see handleLine) corrects __LINE__/__FILE__ for this,
+ * but -- same as #include -- has no way to correct what the *rest* of
+ * the compiler reports, since nothing downstream of this pass knows
+ * anything beyond a line's position in the single, already flattened
+ * text it receives. */
 public class Preprocessor {
     private final List<String> includePaths;
     private final ErrorHandler errorHandler;
@@ -52,6 +66,54 @@ public class Preprocessor {
         this.includePaths = includePaths;
         this.errorHandler = errorHandler;
         this.expander = new MacroExpander(macros, errorHandler);
+        definePredefinedMacros();
+    }
+
+    /** C99 6.10.8's predefined macros this compiler actually defines:
+     *  __STDC__/__STDC_VERSION__ (fixed), __DATE__/__TIME__ (computed
+     *  once here -- "now", at the moment compilation started, same as
+     *  real C requires: one fixed value for the whole translation unit,
+     *  not re-evaluated per use or per file), and placeholder entries
+     *  for __LINE__/__FILE__/__COUNTER__ so "#ifdef"/"defined()" report
+     *  them as defined -- their real values are never read from here:
+     *  MacroExpander#expand special-cases those three names before ever
+     *  consulting a stored body. */
+    private void definePredefinedMacros() {
+        defineLiteral("__STDC__", new Tok(Tok.Kind.NUMBER, "1"));
+        defineLiteral("__STDC_VERSION__", new Tok(Tok.Kind.NUMBER, "199901L"));
+        Calendar now = Calendar.getInstance();
+        defineLiteral("__DATE__", new Tok(Tok.Kind.STRING, "\"" + formatDate(now) + "\""));
+        defineLiteral("__TIME__", new Tok(Tok.Kind.STRING, "\"" + formatTime(now) + "\""));
+        List<Tok> unused = new ArrayList<Tok>();
+        List<String> noParams = new ArrayList<String>();
+        macros.put("__LINE__", new Macro("__LINE__", false, false, noParams, unused));
+        macros.put("__FILE__", new Macro("__FILE__", false, false, noParams, unused));
+        macros.put("__COUNTER__", new Macro("__COUNTER__", false, false, noParams, unused));
+    }
+
+    private void defineLiteral(String name, Tok value) {
+        List<Tok> body = new ArrayList<Tok>();
+        body.add(value);
+        macros.put(name, new Macro(name, false, false, new ArrayList<String>(), body));
+    }
+
+    private static final String[] MONTH_ABBREV = {
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+    };
+
+    /** __DATE__'s exact C99 6.10.8.1 format: "Mmm dd yyyy", where a
+     *  single-digit day is space-padded (not zero-padded, unlike
+     *  everything else here) -- e.g. "Jan  1 2024". */
+    private String formatDate(Calendar cal) {
+        String month = MONTH_ABBREV[cal.get(Calendar.MONTH)];
+        int day = cal.get(Calendar.DAY_OF_MONTH);
+        String dayStr = (day < 10 ? " " : "") + day;
+        return month + " " + dayStr + " " + cal.get(Calendar.YEAR);
+    }
+
+    private String formatTime(Calendar cal) {
+        return String.format("%02d:%02d:%02d", cal.get(Calendar.HOUR_OF_DAY),
+                cal.get(Calendar.MINUTE), cal.get(Calendar.SECOND));
     }
 
     public String preprocessFile(File file) throws FileException {
@@ -67,6 +129,17 @@ public class Preprocessor {
         boolean sawElse;
     }
 
+    /** __LINE__/__FILE__'s current reporting state within one
+     *  processFile() call: reportedLine = physicalLine + lineDelta.
+     *  Adjusted by #line (see handleLine); an included file gets its
+     *  own fresh instance (processFile is recursive, one call per
+     *  nesting level), so #line is correctly scoped to the file that
+     *  used it, exactly like a real preprocessor's. */
+    private static class LineState {
+        String reportedFile;
+        long lineDelta;
+    }
+
     private void processFile(File file, StringBuilder out) throws FileException {
         String canon = canonicalPath(file);
         if (includeStack.contains(canon)) {
@@ -78,6 +151,9 @@ public class Preprocessor {
             List<String> lines = readAllLines(file);
             PPLexer lexer = new PPLexer();
             Deque<CondFrame> condStack = new ArrayDeque<CondFrame>();
+            LineState lineState = new LineState();
+            lineState.reportedFile = file.getPath();
+            lineState.lineDelta = 0;
             int i = 0;
             int lineNo = 0;
             while (i < lines.size()) {
@@ -102,12 +178,13 @@ public class Preprocessor {
                 boolean active = isActive(condStack);
 
                 if (!wasInComment && isDirectiveLine(line)) {
-                    handleDirective(line, file, lineNo, condStack, out, active);
+                    handleDirective(line, file, lineNo, condStack, out, active, lineState);
                 }
                 else if (active) {
                     List<Tok> toks = lexer.tokenize(line);
-                    expander.setLocation(file.getPath(), lineNo);
+                    expander.setLocation(lineState.reportedFile, (int) (lineNo + lineState.lineDelta));
                     List<Tok> expanded = expander.expand(toks);
+                    expanded = stripPragmaOperator(expanded, file, lineNo);
                     out.append(render(expanded));
                 }
                 else {
@@ -154,7 +231,8 @@ public class Preprocessor {
     }
 
     private void handleDirective(String line, File file, int lineNo,
-            Deque<CondFrame> condStack, StringBuilder out, boolean active) {
+            Deque<CondFrame> condStack, StringBuilder out, boolean active,
+            LineState lineState) {
         Matcher m = DIRECTIVE_NAME.matcher(line.trim());
         String name = m.lookingAt() ? m.group(1) : "";
         String rest = line.trim().substring(m.end());
@@ -244,13 +322,122 @@ public class Preprocessor {
             // (no-op) null directive.
         }
         else if (name.equals("line")) {
-            // Not supported (see class doc); silently ignored rather
-            // than treated as an error, since plenty of real headers
-            // emit these unconditionally.
+            handleLine(rest, file, lineNo, lineState);
         }
         else {
             errorHandler.error(file.getPath() + ":" + lineNo + ": unknown preprocessor directive: #" + name);
         }
+    }
+
+    /** #line NUMBER ["FILENAME"]: adjusts what __LINE__/__FILE__ report
+     *  from the *next* physical line onward. This is genuinely limited
+     *  to that (see the class doc for why): it can't redirect what the
+     *  rest of the compiler reports for a diagnostic, since nothing
+     *  downstream of this whole pass knows anything beyond a line's
+     *  position in the one, already-flattened text it receives. Scoped
+     *  to the current file only (see LineState) -- an #include'd file
+     *  with its own #line doesn't affect the file that included it, and
+     *  returning from it restores whatever delta the includer already
+     *  had, matching a real preprocessor's own per-file #line scoping. */
+    private void handleLine(String rest, File file, int lineNo, LineState lineState) {
+        List<Tok> toks = new PPLexer().tokenize(rest);
+        expander.setLocation(file.getPath(), lineNo);
+        List<Tok> expanded = expander.expand(toks);
+        List<Tok> noWs = new ArrayList<Tok>();
+        for (Tok t : expanded) {
+            if (!t.isWs()) noWs.add(t);
+        }
+        if (noWs.isEmpty() || noWs.get(0).kind != Tok.Kind.NUMBER) {
+            errorHandler.error(file.getPath() + ":" + lineNo + ": #line requires a line number");
+            return;
+        }
+        long newLine;
+        try {
+            newLine = Long.parseLong(noWs.get(0).text);
+        }
+        catch (NumberFormatException ex) {
+            errorHandler.error(file.getPath() + ":" + lineNo
+                    + ": invalid #line number: " + noWs.get(0).text);
+            return;
+        }
+        if (noWs.size() > 1) {
+            if (noWs.get(1).kind == Tok.Kind.STRING) {
+                lineState.reportedFile = unquote(noWs.get(1).text);
+            }
+            else {
+                errorHandler.error(file.getPath() + ":" + lineNo + ": malformed #line filename");
+            }
+        }
+        // The *next* physical line (lineNo + 1) should report as newLine.
+        lineState.lineDelta = newLine - (lineNo + 1);
+    }
+
+    /** Undoes stringify()'s escaping of '"'/'\\' and strips the
+     *  surrounding quotes -- used for #line's filename operand and
+     *  _Pragma's string operand (C99 6.10.9's own "destringizing"). */
+    private static String unquote(String text) {
+        String inner = text.substring(1, text.length() - 1);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < inner.length(); i++) {
+            char c = inner.charAt(i);
+            if (c == '\\' && i + 1 < inner.length()
+                    && (inner.charAt(i + 1) == '"' || inner.charAt(i + 1) == '\\')) {
+                i++;
+                c = inner.charAt(i);
+            }
+            sb.append(c);
+        }
+        return sb.toString();
+    }
+
+    /** C99 6.10.9's _Pragma(STRING) operator, recognized anywhere it
+     *  appears in already macro-expanded text -- including text a macro
+     *  itself produced (e.g. "#define DO_PRAGMA(x) _Pragma(#x)"), since
+     *  by the time this runs, expand() has already fully expanded that
+     *  call. With no pragma this compiler actually acts on (see
+     *  #pragma's own handling above), a well-formed one is simply
+     *  equivalent to an ignored #pragma and vanishes; its argument is
+     *  still destringized and thrown away rather than skipped
+     *  altogether, so a malformed one (e.g. missing its closing paren)
+     *  is still caught as an error instead of silently passed through
+     *  to the parser as raw, meaningless tokens. */
+    private List<Tok> stripPragmaOperator(List<Tok> in, File file, int lineNo) {
+        boolean any = false;
+        for (Tok t : in) {
+            if (t.isIdent() && t.text.equals("_Pragma")) {
+                any = true;
+                break;
+            }
+        }
+        if (!any) {
+            return in;
+        }
+        List<Tok> out = new ArrayList<Tok>();
+        int i = 0;
+        while (i < in.size()) {
+            Tok t = in.get(i);
+            if (t.isIdent() && t.text.equals("_Pragma")) {
+                int j = i + 1;
+                while (j < in.size() && in.get(j).isWs()) j++;
+                if (j < in.size() && in.get(j).isPunct("(")) {
+                    j++;
+                    while (j < in.size() && in.get(j).isWs()) j++;
+                    if (j < in.size() && in.get(j).kind == Tok.Kind.STRING) {
+                        unquote(in.get(j).text);  // destringized, then discarded -- see doc comment
+                        j++;
+                        while (j < in.size() && in.get(j).isWs()) j++;
+                        if (j < in.size() && in.get(j).isPunct(")")) {
+                            i = j + 1;
+                            continue;
+                        }
+                    }
+                }
+                errorHandler.error(file.getPath() + ":" + lineNo + ": malformed _Pragma operator");
+            }
+            out.add(t);
+            i++;
+        }
+        return out;
     }
 
     private long evalCondition(String rest, File file, int lineNo) {
@@ -318,17 +505,19 @@ public class Preprocessor {
         String name = toks.get(i).text;
         i++;
         boolean functionLike = false;
+        boolean variadic = false;
         List<String> params = new ArrayList<String>();
         if (i < toks.size() && toks.get(i).isPunct("(")) {
             functionLike = true;
             i++;
-            boolean variadic = false;
             while (i < toks.size() && !toks.get(i).isPunct(")")) {
                 Tok t = toks.get(i);
                 if (t.isWs() || t.isPunct(",")) {
                     i++;
                 }
                 else if (t.isPunct(".")) {
+                    // "..." lexes as three separate "." tokens (see
+                    // PPLexer) -- any of the three latches variadic.
                     variadic = true;
                     i++;
                 }
@@ -341,18 +530,13 @@ public class Preprocessor {
                 }
             }
             if (i < toks.size() && toks.get(i).isPunct(")")) i++;
-            if (variadic) {
-                errorHandler.error(file.getPath() + ":" + lineNo
-                        + ": variadic macros are not supported: " + name);
-                return;
-            }
         }
         while (i < toks.size() && toks.get(i).isWs()) i++;
         List<Tok> body = new ArrayList<Tok>(toks.subList(i, toks.size()));
         while (!body.isEmpty() && body.get(body.size() - 1).isWs()) {
             body.remove(body.size() - 1);
         }
-        macros.put(name, new Macro(name, functionLike, params, body));
+        macros.put(name, new Macro(name, functionLike, variadic, params, body));
     }
 
     private void handleInclude(String rest, File file, int lineNo, StringBuilder out) {

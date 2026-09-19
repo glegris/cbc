@@ -20,6 +20,10 @@ public class MacroExpander {
     private final ErrorHandler errorHandler;
     private String currentFile = "?";
     private int currentLine = 0;
+    /** __COUNTER__'s next value -- shared across the whole preprocessing
+     *  run (this instance lives as long as the Preprocessor that owns
+     *  it), incrementing by one on every expansion, never reset. */
+    private int counterValue = 0;
 
     public MacroExpander(Map<String, Macro> macros, ErrorHandler errorHandler) {
         this.macros = macros;
@@ -40,6 +44,21 @@ public class MacroExpander {
         int i = 0;
         while (i < input.size()) {
             Tok t = input.get(i);
+            if (t.isIdent() && t.text.equals("__LINE__")) {
+                out.add(new Tok(Tok.Kind.NUMBER, String.valueOf(currentLine)));
+                i++;
+                continue;
+            }
+            if (t.isIdent() && t.text.equals("__FILE__")) {
+                out.add(new Tok(Tok.Kind.STRING, quoteFileName(currentFile)));
+                i++;
+                continue;
+            }
+            if (t.isIdent() && t.text.equals("__COUNTER__")) {
+                out.add(new Tok(Tok.Kind.NUMBER, String.valueOf(counterValue++)));
+                i++;
+                continue;
+            }
             if (!t.isIdent() || !macros.containsKey(t.text) || hideSet.contains(t.text)) {
                 out.add(t);
                 i++;
@@ -126,10 +145,16 @@ public class MacroExpander {
         }
         // F() with zero declared params is zero arguments, not one empty
         // one; anything else always closes out with one final argument
-        // (possibly empty, e.g. the trailing "" in F(1,)).
+        // (possibly empty, e.g. the trailing "" in F(1,)). This still
+        // applies unchanged to a variadic macro whose "..." is its only
+        // parameter (m.params.isEmpty()): "F()" is zero raw arguments,
+        // so __VA_ARGS__ ends up empty below, same as real C/GNU allow.
         boolean noArgsAtAll = m.params.isEmpty() && args.isEmpty() && trimWs(cur).isEmpty();
         if (!noArgsAtAll) {
             args.add(trimWs(cur));
+        }
+        if (m.variadic) {
+            return mergeVariadicTail(args, m);
         }
         if (args.size() != m.params.size()) {
             error("macro " + m.name + " expects " + m.params.size()
@@ -137,6 +162,33 @@ public class MacroExpander {
             while (args.size() < m.params.size()) args.add(new ArrayList<Tok>());
             while (args.size() > m.params.size()) args.remove(args.size() - 1);
         }
+        return args;
+    }
+
+    /** For a variadic macro, collapses every raw argument beyond its
+     *  declared (named) parameters into one combined "__VA_ARGS__"
+     *  argument -- comma-separated, exactly as written -- appended
+     *  right after the named ones (see Macro#paramIndex, which expects
+     *  it there). Zero trailing arguments is allowed (real GNU/Clang
+     *  behavior, though not strictly legal pre-C23 standard C): a call
+     *  like "F(x)" for "#define F(a, ...)" just gives an empty
+     *  __VA_ARGS__, not an error. */
+    private List<List<Tok>> mergeVariadicTail(List<List<Tok>> raw, Macro m) {
+        if (raw.size() < m.params.size()) {
+            error("macro " + m.name + " requires at least " + m.params.size()
+                    + " argument(s), got " + raw.size());
+            while (raw.size() < m.params.size()) raw.add(new ArrayList<Tok>());
+        }
+        List<List<Tok>> args = new ArrayList<List<Tok>>(raw.subList(0, m.params.size()));
+        List<Tok> varargs = new ArrayList<Tok>();
+        for (int k = m.params.size(); k < raw.size(); k++) {
+            if (k > m.params.size()) {
+                varargs.add(new Tok(Tok.Kind.PUNCT, ","));
+                varargs.add(new Tok(Tok.Kind.WS, " "));
+            }
+            varargs.addAll(raw.get(k));
+        }
+        args.add(varargs);
         return args;
     }
 
@@ -178,6 +230,20 @@ public class MacroExpander {
                     boolean pastedLeft = isHashHash(lastNonWs(result));
                     boolean pastedRight = isHashHash(nextNonWs(body, i + 1));
                     List<Tok> argToks = args.get(pidx);
+                    // GNU extension: ", ## __VA_ARGS__" is never a real
+                    // token paste, whether or not variadic arguments
+                    // were actually given -- see mergeCommaVarargs.
+                    if (m.variadic && pidx == m.params.size() && pastedLeft
+                            && isComma(tokenBeforeTrailingHashHash(result))) {
+                        removeLastNonWs(result);  // drop the already-emitted "##"
+                        if (argToks.isEmpty()) {
+                            removeLastNonWs(result);  // and the "," before it
+                        }
+                        else {
+                            result.addAll(expand(argToks, hideSet));
+                        }
+                        continue;
+                    }
                     result.addAll((pastedLeft || pastedRight) ? argToks : expand(argToks, hideSet));
                     continue;
                 }
@@ -189,6 +255,32 @@ public class MacroExpander {
 
     private boolean isHashHash(Tok t) {
         return t != null && t.isPunct("##");
+    }
+
+    private boolean isComma(Tok t) {
+        return t != null && t.isPunct(",");
+    }
+
+    /** Assumes lastNonWs(result) is already known to be "##" (i.e.
+     *  pastedLeft is true): finds whatever non-whitespace token sits
+     *  just before that "##", without removing anything. */
+    private Tok tokenBeforeTrailingHashHash(List<Tok> result) {
+        int i = result.size() - 1;
+        while (i >= 0 && result.get(i).isWs()) i--;
+        i--;  // step past the "##" itself
+        while (i >= 0 && result.get(i).isWs()) i--;
+        return (i >= 0) ? result.get(i) : null;
+    }
+
+    /** Pops the last non-whitespace token off result, along with any
+     *  whitespace trailing it. */
+    private void removeLastNonWs(List<Tok> result) {
+        while (!result.isEmpty() && result.get(result.size() - 1).isWs()) {
+            result.remove(result.size() - 1);
+        }
+        if (!result.isEmpty()) {
+            result.remove(result.size() - 1);
+        }
     }
 
     private Tok lastNonWs(List<Tok> toks) {
@@ -203,6 +295,20 @@ public class MacroExpander {
             if (!toks.get(i).isWs()) return toks.get(i);
         }
         return null;
+    }
+
+    /** __FILE__'s value: the current file name as a C string literal
+     *  (backslash/quote-escaped, same as stringify() does for a macro
+     *  argument -- a file path is just as likely to contain a
+     *  backslash, e.g. on Windows). */
+    private String quoteFileName(String path) {
+        StringBuilder sb = new StringBuilder("\"");
+        for (char c : path.toCharArray()) {
+            if (c == '"' || c == '\\') sb.append('\\');
+            sb.append(c);
+        }
+        sb.append('"');
+        return sb.toString();
     }
 
     private String stringify(List<Tok> toks) {

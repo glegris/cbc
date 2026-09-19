@@ -226,6 +226,10 @@ run_case const          "16;16;16;msgstring"
 run_case initializer    "4;80;0;local"
 run_case funcptr        "OK;OK;OK;OK"
 
+# --- preprocessor: variadic macros (incl. GNU ", ##__VA_ARGS__" comma
+# elision), predefined macros, and #line's effect on __LINE__ ---
+run_case preprocessor   "42;noargs;witharg:7;1;0;1;1000"
+
 echo
 echo "pass=$pass known-diff=$known fail=$fail"
 rm -rf "$SCRATCH"
