@@ -7,7 +7,7 @@
  * a file. A one-time guard around that part would silently break
  * exactly that use.
  *
- * __cflat_assert_fail() is "static" so that two different .cb files
+ * __cflat_assert_fail() is "static" so that two different .c files
  * both including this header don't collide -- on x86 each is its own
  * translation unit, linked together afterward, so a plain (non-static)
  * definition repeated in each one's assert.h copy would be a duplicate-

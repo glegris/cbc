@@ -92,7 +92,7 @@ machine without the multilib packages installed, that suite is reported
 as skipped rather than failed, since there's nothing wrong with the
 compiler in that case.
 
-`test/run_jvm.sh` is a from-scratch port of the same `test/*.cb` files to
+`test/run_jvm.sh` is a from-scratch port of the same `test/*.c` files to
 the JVM backend (`-arch=jvm`), and is the main way to test cbc itself in
 an environment that only has a JDK and no x86 toolchain at all. A fixed
 set of tests are reported as `KNOWN-DIFF` rather than pass/fail, for
@@ -261,7 +261,7 @@ described below:
 
 ## Preprocessor
 
-Every `.cb` file is now run through a real C-style preprocessor before it
+Every `.c` file is now run through a real C-style preprocessor before it
 reaches the parser, on both backends. It's a token-based pass (not raw
 text substitution), so it gets macro-argument handling, `#`/`##` and
 recursive macro expansion right rather than approximately right:
@@ -398,13 +398,13 @@ library. There is no separate assemble/link step for this target: the
 `.class` file it produces is already runnable.
 
 ```shell
-cbc -arch=jvm test/add.cb
+cbc -arch=jvm test/add.c
 java -cp .:path/to/build/classes add
 ```
 
 (`--target=jvm` is accepted as a longer alias for `-arch=jvm`.) The
 produced class is named after the source file, sanitized into a valid
-Java identifier (e.g. `while-break.cb` becomes class `while_break`), so
+Java identifier (e.g. `while-break.c` becomes class `while_break`), so
 that the file name and the class name it contains always match.
 
 The `build/classes` half of that classpath (wherever `bin/build.sh`
@@ -469,7 +469,7 @@ C-style address space:
     and calling it both work, for `int`/`long`/pointer and `float`/`double`
     (promoted to `double`, per C's own default argument promotion)
     arguments, using cflat's existing `va_list`/`va_init()`/`va_next()`
-    (`#include "stdarg.h"`, see `lib/stdarg.cb`) -- unchanged from the x86
+    (`#include "stdarg.h"`, see `lib/stdarg.c`) -- unchanged from the x86
     backend's own implementation of those three, despite the JVM having
     no equivalent of a real, contiguous call stack to point into: a call
     to a vararg function marshals its "..." arguments into a small,
@@ -480,7 +480,7 @@ C-style address space:
     compile-time intrinsic, alongside `printf` and friends), after which
     `va_next()`'s own implementation (a real `StandardRuntime` method,
     `long va_next(long ap)`) is plain pointer arithmetic, exactly as
-    `lib/stdarg.cb` already expects. Not supported: taking the address of
+    `lib/stdarg.c` already expects. Not supported: taking the address of
     a variadic function, or calling one through a function pointer
     (same restriction plain function pointers already have on this
     backend), and a variadic *external* function declared but not
@@ -554,7 +554,7 @@ actually *calling* an unimplemented one fails, at run time, with
 `NativeRuntime.java` by hand to implement it and re-run `cbc`, which
 recompiles it with `javac` automatically (no separate manual step).
 **`cbc` never overwrites an existing `NativeRuntime.java`** (your edits
-always survive recompiling the `.cb` file, and are picked up by that same
+always survive recompiling the `.c` file, and are picked up by that same
 automatic recompile); if the program starts calling a function the
 existing file doesn't seem to define yet, that's reported as a warning
 naming it, not silently patched in or silently left to fail at run time as

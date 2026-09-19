@@ -3,7 +3,7 @@ import net.loveruby.cflat.utils.NameUtils;
 import java.io.File;
 
 class SourceFile implements LdArg {
-    static final String EXT_CFLAT_SOURCE = ".cb";
+    static final String EXT_CFLAT_SOURCE = ".c";
     static final String EXT_ASSEMBLY_SOURCE = ".s";
     static final String EXT_OBJECT_FILE = ".o";
     static final String EXT_STATIC_LIBRARY = ".a";

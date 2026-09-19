@@ -40,7 +40,7 @@ test_06_variables() {
     assert_out "1;2;3;4;5" ./lvar2
     assert_out "4;80;0;local" ./initializer
     assert_out "16;16;16;msgstring" ./const
-    assert_compile_error var-semcheck.cb
+    assert_compile_error var-semcheck.c
 
     assert_out "1;2;OK;NEW" ./comm &&
     assert_public comm global_int &&
@@ -100,7 +100,7 @@ test_10_assign() {
     assert_out "3;4;3;12;4;1;1;7;5;1;4;e;H;76;75;1;3;6;82;81" ./opassign
     assert_out "0;1;2;2;3;3;4;5;5" ./inc
     assert_out "4;3;2;2;1;1;0" ./dec
-    assert_compile_error textwrite.cb
+    assert_compile_error textwrite.c
 }
 
 test_12_if() {
@@ -135,19 +135,19 @@ test_17_jump() {
     assert_ok ./while-break
     assert_ok ./dowhile-break
     assert_ok ./for-break
-    assert_compile_error break-semcheck.cb
+    assert_compile_error break-semcheck.c
 
     assert_ok ./while-continue
     assert_ok ./dowhile-continue
     assert_ok ./for-continue
-    assert_compile_error continue-semcheck.cb
+    assert_compile_error continue-semcheck.c
 }
 
 test_18_array() {
     assert_out "1;5;9" ./array
     assert_out "0;0;0" ./array2
     assert_out "3;4;5;6;7;8;9;10;11;" ./mdarray
-    assert_compile_success mdarray2.cb &&
+    assert_compile_success mdarray2.c &&
     if ruby_exists
     then
         local offsets=$(./mdarray2 | ruby -e '
@@ -157,10 +157,10 @@ test_18_array() {
         assert_eq "0;4;8;12;16;20;24;28;32" "$offsets"
     fi
     assert_out "775;776;777;778;775;776;777;778;775;776;777;778;775;776;777;778;" ./ptrarray
-    assert_compile_error aref-semcheck.cb
-    assert_compile_error aref-semcheck2.cb
-    assert_compile_error array-semcheck1.cb
-    assert_compile_error array-semcheck2.cb
+    assert_compile_error aref-semcheck.c
+    assert_compile_error aref-semcheck2.c
+    assert_compile_error array-semcheck1.c
+    assert_compile_error array-semcheck2.c
 }
 
 ruby_exists() {
@@ -172,35 +172,35 @@ test_19_struct() {
     assert_out "701;702;703;704" ./struct2
     assert_out "7" ./struct3
     assert_stat 0 ./struct-semcheck
-    assert_compile_success empstruct.cb
-    assert_compile_error struct-semcheck2.cb
-    assert_compile_error struct-semcheck3.cb
-    assert_compile_error struct-semcheck4.cb
-    assert_compile_error struct-semcheck5.cb
-    assert_compile_error struct-semcheck6.cb
-    assert_compile_error struct-semcheck7.cb
-    assert_compile_error struct-semcheck8.cb
-    assert_compile_error struct-semcheck9.cb
-    assert_compile_error struct-semcheck10.cb
+    assert_compile_success empstruct.c
+    assert_compile_error struct-semcheck2.c
+    assert_compile_error struct-semcheck3.c
+    assert_compile_error struct-semcheck4.c
+    assert_compile_error struct-semcheck5.c
+    assert_compile_error struct-semcheck6.c
+    assert_compile_error struct-semcheck7.c
+    assert_compile_error struct-semcheck8.c
+    assert_compile_error struct-semcheck9.c
+    assert_compile_error struct-semcheck10.c
 }
 
 test_20_union() {
     assert_out "1;2;513" ./union   # little endian
     assert_stat 0 ./union-semcheck
-    assert_compile_error union-semcheck2.cb
-    assert_compile_error union-semcheck3.cb
-    assert_compile_error union-semcheck4.cb
-    assert_compile_error union-semcheck5.cb
-    assert_compile_error union-semcheck6.cb
-    assert_compile_error union-semcheck7.cb
-    assert_compile_error union-semcheck8.cb
-    assert_compile_error union-semcheck9.cb
-    assert_compile_error union-semcheck10.cb
+    assert_compile_error union-semcheck2.c
+    assert_compile_error union-semcheck3.c
+    assert_compile_error union-semcheck4.c
+    assert_compile_error union-semcheck5.c
+    assert_compile_error union-semcheck6.c
+    assert_compile_error union-semcheck7.c
+    assert_compile_error union-semcheck8.c
+    assert_compile_error union-semcheck9.c
+    assert_compile_error union-semcheck10.c
 }
 
 test_21_typedef() {
     assert_out "1;2;1;1;3;4;5;6;OK" ./usertype
-    assert_compile_error recursivetypedef.cb
+    assert_compile_error recursivetypedef.c
 }
 
 test_22_pointer() {
@@ -212,11 +212,11 @@ test_22_pointer() {
     assert_out "7" ./ptrmemb2
     assert_out "OK;OK;OK;OK" ./addressof
     assert_out "-4;-5;-5;-3" ./ptrdiff
-    assert_compile_error deref-semcheck1.cb
-    assert_compile_error deref-semcheck2.cb
-    assert_compile_error deref-semcheck3.cb
-    assert_compile_error deref-semcheck4.cb
-    assert_compile_error deref-semcheck5.cb
+    assert_compile_error deref-semcheck1.c
+    assert_compile_error deref-semcheck2.c
+    assert_compile_error deref-semcheck3.c
+    assert_compile_error deref-semcheck4.c
+    assert_compile_error deref-semcheck5.c
 }
 
 test_23_limits() {
@@ -243,26 +243,26 @@ test_25_block() {
     assert_out "1;2;3;1;OK" ./block
     assert_out "1;2;3" ./defvar
     assert_out "77" ./decloverride
-    assert_compile_error decloverride2.cb
+    assert_compile_error decloverride2.c
 }
 
 test_26_funcptr() {
     assert_out "OK;OK;OK;OK" ./funcptr
     assert_out ";OK;OK;OK;OK;OK" ./implicitaddr
-    assert_compile_error defun-semcheck.cb
-    assert_compile_error defun-semcheck2.cb
-    assert_compile_error defun-semcheck3.cb
-    assert_compile_error defun-semcheck4.cb
-    assert_compile_error defun-semcheck5.cb
-    assert_compile_error defun-semcheck6.cb
-    assert_compile_error defun-semcheck7.cb
-    assert_compile_error defun-semcheck8.cb
-    assert_compile_error funcall-semcheck.cb
-    assert_compile_error funcall-semcheck2.cb
+    assert_compile_error defun-semcheck.c
+    assert_compile_error defun-semcheck2.c
+    assert_compile_error defun-semcheck3.c
+    assert_compile_error defun-semcheck4.c
+    assert_compile_error defun-semcheck5.c
+    assert_compile_error defun-semcheck6.c
+    assert_compile_error defun-semcheck7.c
+    assert_compile_error defun-semcheck8.c
+    assert_compile_error funcall-semcheck.c
+    assert_compile_error funcall-semcheck2.c
 }
 
 test_27_switch() {
-    if assert_compile_success switch.cb
+    if assert_compile_success switch.c
     then
         assert_stdout "1 or 2" ./switch
         assert_stdout "1 or 2" ./switch x
@@ -277,20 +277,20 @@ test_27_switch() {
 
 test_28_syntax() {
     assert_out "1, 2, 0" ./syntax1
-    assert_compile_success syntax2.cb
+    assert_compile_success syntax2.c
     assert_stat 0 ./syntax3
 }
 
 test_29_import() {
-    assert_compile_success duplicated-import.cb
-    assert_compile_success vardecl.cb &&
+    assert_compile_success duplicated-import.c
+    assert_compile_success vardecl.c &&
     assert_status 0 ./vardecl
-    assert_compile_success -fPIC vardecl.cb &&
+    assert_compile_success -fPIC vardecl.c &&
     assert_status 0 ./vardecl
 }
 
 test_30_staticfunction() {
-    assert_compile_success staticfunc.cb &&
+    assert_compile_success staticfunc.c &&
     assert_private staticfunc private_function
 }
 
@@ -306,7 +306,7 @@ test_32_noreturn() {
 }
 
 test_33_multipleinput() {
-    assert_compile_success src1.cb src2.cb -o src &&
+    assert_compile_success src1.c src2.c -o src &&
     assert_status 4 ./src
 }
 
@@ -315,15 +315,15 @@ test_34_varargs() {
 }
 
 test_35_invalidstmt() {
-    assert_compile_error invalidstmt1.cb
-    assert_compile_error invalidstmt2.cb
-    assert_compile_success validstmt1.cb
+    assert_compile_error invalidstmt1.c
+    assert_compile_error invalidstmt2.c
+    assert_compile_success validstmt1.c
 }
 
 test_36_alloca() {
     assert_out "<<Hello>>" ./alloca
     assert_out "17;17;17;17" ./alloca2
-    assert_compile_success -fPIE -pie alloca2.cb &&
+    assert_compile_success -fPIE -pie alloca2.c &&
     assert_out "17;17;17;17" ./alloca2
 }
 
@@ -337,7 +337,7 @@ test_37_setjmp() {
 
 assert_stat() {
     st=$1; shift
-    assert_compile_success "$1.cb" &&
+    assert_compile_success "$1.c" &&
     assert_status $st "$@"
 }
 
@@ -345,16 +345,16 @@ assert_out() {
     msg="$1"; shift
     if [ -n "$SHUNIT_FAST" ]
     then
-        assert_compile_success "$1.cb" &&
+        assert_compile_success "$1.c" &&
         assert_stdout "$msg" "$@"
     else
-        assert_compile_success "$1.cb" &&
+        assert_compile_success "$1.c" &&
         assert_stdout "$msg" "$@" &&
-        assert_compile_success -O "$1.cb" &&
+        assert_compile_success -O "$1.c" &&
         assert_stdout "$msg" "$@" &&
-        assert_compile_success -fPIC "$1.cb" &&
+        assert_compile_success -fPIC "$1.c" &&
         assert_stdout "$msg" "$@" &&
-        assert_compile_success -O -fPIC "$1.cb" &&
+        assert_compile_success -O -fPIC "$1.c" &&
         assert_stdout "$msg" "$@"
     fi
 }

@@ -2171,7 +2171,7 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         }
 
         /** va_init(arg): on this backend, "arg" (always "&lastParam" in
-         *  practice -- see lib/stdarg.cb) is never actually used. Unlike
+         *  practice -- see lib/stdarg.c) is never actually used. Unlike
          *  x86, where the whole call/frame layout naturally puts every
          *  argument (fixed and variadic) in one contiguous block so
          *  "&lastParam + 1" already IS the first vararg value's address,
@@ -2183,7 +2183,7 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
          *  va_next() (see StandardRuntime) then needs no JVM-specific
          *  treatment at all -- it's plain pointer arithmetic over
          *  whatever address va_init happened to hand it, exactly as
-         *  lib/stdarg.cb already defines it for x86. */
+         *  lib/stdarg.c already defines it for x86. */
         private void compileVaInit(Call node) {
             if (varargSlot < 0) {
                 error("va_init() used outside a variadic function");

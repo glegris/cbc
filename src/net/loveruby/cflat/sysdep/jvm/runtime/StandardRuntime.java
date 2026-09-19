@@ -35,7 +35,7 @@ import java.util.Arrays;
  *    convenient -- the compiler already knows their exact names and emits
  *    calls to them by hand.
  *
- *  - Everything else -- any function merely *declared* (e.g. via import)
+ *  - Everything else -- any function merely *declared* (e.g. via #include)
  *    and called, not one of the three intrinsics above -- goes through
  *    the generic extern-call mechanism (CodeGenerator#compileNativeCall),
  *    with parameters/return type mapped the same way
@@ -317,13 +317,13 @@ public class StandardRuntime {
 
     //
     // <stdarg.h> -- va_next() is the only half of cflat's va_list support
-    // (see lib/stdarg.cb) that needs a JVM-specific implementation:
+    // (see lib/stdarg.c) that needs a JVM-specific implementation:
     // va_init() itself is a CodeGenerator compile-time intrinsic (see
     // compileVaInit), since only the compiler knows where a given
     // function's "..." tail was marshalled to (see compileVarargTail) --
     // but once va_init() has handed back that address, walking forward
     // through it one 8-byte slot at a time is just ordinary pointer
-    // arithmetic, identical in spirit to lib/stdarg.cb's own x86
+    // arithmetic, identical in spirit to lib/stdarg.c's own x86
     // implementation ("va_arg_t arg = **ap; (*ap)++; return arg;"), just
     // expressed here directly against "buf" instead of relying on cflat
     // pointer dereference codegen.

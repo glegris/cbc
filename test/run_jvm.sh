@@ -1,6 +1,6 @@
 #!/bin/bash
 # Regression suite for the JVM backend (-arch=jvm), run against the
-# checked-in test/*.cb files. This is the primary way to test cbc in
+# checked-in test/*.c files. This is the primary way to test cbc in
 # environments that lack a 32-bit x86 toolchain (no "as"/"ld" for -m32,
 # e.g. missing multilib libraries) -- see test_cbc.sh for the equivalent
 # native-x86 suite, which this script does not replace.
@@ -63,18 +63,18 @@ report() {
     fi
 }
 
-# Compiles NAME.cb in its own scratch subdirectory (so a stray .h sibling
+# Compiles NAME.c in its own scratch subdirectory (so a stray .h sibling
 # in test/, e.g. decloverride.h, still resolves via a quoted #include's
 # own "look next to the including file first" rule) and echoes the
 # resulting class name on success.
 compile_case() {
     local name="$1" work="$SCRATCH/$1"
     mkdir -p "$work"
-    cp "$DIR/$name.cb" "$work/"
+    cp "$DIR/$name.c" "$work/"
     if [ -f "$DIR/$name.h" ]; then
         cp "$DIR/$name.h" "$work/"
     fi
-    ( cd "$work" && "$CBC" -arch=jvm -I "$IMPORT" -I "$DIR" "$name.cb" ) \
+    ( cd "$work" && "$CBC" -arch=jvm -I "$IMPORT" -I "$DIR" "$name.c" ) \
         >"$work/compile.out" 2>"$work/compile.err"
     if [ $? -ne 0 ]; then
         return 1
@@ -193,7 +193,7 @@ for t in if1 if2 while1 while2 while-break while-continue dowhile1 dowhile2 \
     run_exit0 "$t"
 done
 
-# varargs.cb itself (above) only exercises &stdout, a separate, already
+# varargs.c itself (above) only exercises &stdout, a separate, already
 # known-diff limitation (see KNOWN_DIFF) -- this exercises the JVM
 # backend's actual variadic-function support (int/long/double varargs,
 # multiple call sites, a nested vararg call as an outer vararg's own

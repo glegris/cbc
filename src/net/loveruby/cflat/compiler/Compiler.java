@@ -161,7 +161,7 @@ public class Compiler {
      *  the compiled program now extends NativeRuntime directly, so it
      *  can't even be loaded without NativeRuntime.class present.  Never
      *  overwrites an existing NativeRuntime.java -- a user's hand-written
-     *  implementations in it must survive recompiling the .cb file --
+     *  implementations in it must survive recompiling the .c file --
      *  but does warn about any stub name the existing file doesn't seem
      *  to define, since otherwise a missing one only shows up as a
      *  NoSuchMethodError at run time; either way, it's (re)compiled with

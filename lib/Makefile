@@ -8,9 +8,9 @@ CFLAGS = -Wall
 AR_CREATE = ar crs
 
 .SUFFIXES:
-.SUFFIXES: .cb .s .o
+.SUFFIXES: .c .s .o
 
-.cb.o:
+.c.o:
 	$(CBC) $(CBFLAGS) -Wa,"--32" -c $< -o $@
 .s.o:
 	$(CBC) -Wa,"--32" -c $<
@@ -18,7 +18,7 @@ AR_CREATE = ar crs
 $(TARGET): $(OBJS)
 	$(AR_CREATE) $(TARGET) $(OBJS)
 
-stdarg.o: stdarg.cb
+stdarg.o: stdarg.c
 
 sizeof_jmpbuf: sizeof_jmpbuf.c
 	$(CC) $(CFLAGS) -o $@ $<

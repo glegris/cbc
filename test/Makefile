@@ -3,9 +3,9 @@ CBC = ../bin/cbc
 CBFLAGS =
 
 .SUFFIXES:
-.SUFFIXES: .cb .
+.SUFFIXES: .c .
 
-.cb:
+.c:
 	$(CBC) $(CBFLAGS) $<
 
 default: compile
