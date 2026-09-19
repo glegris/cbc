@@ -235,21 +235,35 @@ described below:
     written as a global's or a `static` local's whole initializer
     (`struct point origin = (struct point){0, 0};`) or as an
     already-braced nested element of one
-    (`int[2] pair = {(int){1}, (int){2}};`): both are recognized the same
-    way before storage duration is even decided, so they fall out of the
-    ordinary global/static initializer path, not the automatic-storage
-    one. Two scope limits remain: a compound literal nested inside some
-    *other* expression -- addressed (`&(struct point){1,2}`), passed
-    straight to a function, or with a member immediately accessed off it
-    -- still only has automatic storage duration, so still needs a
-    function body to be local to (this is really the same "taking the
-    address of anything isn't supported in a static initializer"
-    limitation that already applies to a plain global, not something
-    specific to compound literals); and, matching this compiler's
-    aggregate initializers generally, the array/struct/union's own type
-    must be written out in full (`(int[])`, without a length, to infer it
-    from the initializer list the way C99 itself allows, isn't
-    supported).
+    (`int[2] pair = {(int){1}, (int){2}};`); a compound literal nested
+    inside some *other* expression -- addressed
+    (`struct point *p = &(struct point){1,2};`), passed straight to a
+    function, or with a member immediately accessed off it -- still gets
+    automatic storage duration when that happens inside a function body,
+    but **also now works addressed in a global/`static` initializer**
+    (see "Address-of static initializers" below), backed by a
+    compiler-synthesized anonymous static object. One scope limit
+    remains, matching this compiler's aggregate initializers generally:
+    the array/struct/union's own type must be written out in full
+    (`(int[])`, without a length, to infer it from the initializer list
+    the way C99 itself allows, isn't supported).
+  * **Address-of static initializers**: `&expr` is now usable inside a
+    global's or a `static` local's own initializer, not just inside a
+    function body -- e.g. a table of pointers to other globals
+    (`struct point *table[] = {&origin, &unit};`), a self-referential
+    linked structure built entirely out of file-scope data
+    (`struct node c = {3, NULL}; struct node b = {2, &c};`), or `&` of an
+    anonymous compound literal (`struct point *p = &(struct point){1,2};`,
+    backed by a compiler-synthesized static object with no name of its
+    own). This resolves to an actual link-time constant address for
+    exactly two shapes: `&` of a plain global/`static` variable, and `&`
+    of a compound literal; `&globalArray[i]` or `&globalStruct.field`
+    aren't supported there yet, since those would need computing a
+    constant byte offset on top of the base address, which this doesn't
+    do. A reference to a named `const TYPE X = ...;` (or an enumerator)
+    used *by value* rather than by address -- e.g. stddef.h's own
+    `NULL` above -- also now works in this position, inlining its own
+    (recursively resolved) initializer expression.
   * **`long long`/`unsigned long long`**: a real, distinct 8-byte integer
     type (`sizeof(long long) == 8`), including the `LL`/`ULL`/`LU`/`UL`
     literal suffixes (`123456789012345LL`), usable anywhere a type can

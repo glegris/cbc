@@ -256,6 +256,22 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator,
                 throw new Error("pointer size must be 4,8");
             }
         }
+        else if (node instanceof Addr) {
+            // "&globalVar" or "&(type){...}" (the latter backed by a
+            // synthesized static object -- see IRGenerator's
+            // synthesizeStaticCompoundLiteral) folded to a constant
+            // address: same shape as a Str's own symbol reference above,
+            // just naming a data-section entity instead of a rodata
+            // string constant.
+            Entity ent = ((Addr)node).entity();
+            Symbol sym = symbol(ent.symbolString(), ent.isPrivate());
+            switch ((int)size) {
+            case 4: file._long(sym);   break;
+            case 8: file._quad(sym);   break;
+            default:
+                throw new Error("pointer size must be 4,8");
+            }
+        }
         else {
             throw new Error("unknown literal node type" + node.getClass());
         }

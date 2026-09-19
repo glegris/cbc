@@ -29,6 +29,23 @@ public class AddressNode extends ExprNode {
         return expr.location();
     }
 
+    /** Same deferred-validation pattern as AggregateLiteralNode/
+     *  CompoundLiteralNode: DereferenceChecker's blunt "is this whole
+     *  top-level initializer a constant?" gate runs before IRGenerator
+     *  ever sees this node, too early to tell whether "&expr" points at
+     *  something IRGenerator's foldStaticConstant can actually turn into
+     *  a link-time constant address (a global variable, or a compound
+     *  literal -- both get their own static-storage object) or something
+     *  it can't (e.g. "&globalArray[i]" with a non-constant "i"). So this
+     *  always reports true -- DereferenceChecker's own isLvalue() check
+     *  (visit(AddressNode)) still rejects "&" of a non-lvalue regardless
+     *  -- and foldStaticConstant does the real, context-aware check,
+     *  falling back to the same "not a compile-time constant" error an
+     *  unfoldable aggregate leaf already gets. */
+    public boolean isConstant() {
+        return true;
+    }
+
     protected void _dump(Dumper d) {
         if (type != null) {
             d.printMember("type", type);

@@ -14,6 +14,12 @@ import java.util.*;
 class IRGenerator implements ASTVisitor<Void, Expr> {
     private final TypeTable typeTable;
     private final ErrorHandler errorHandler;
+    // Set once per generate(AST) call -- needed by synthesizeStaticCompoundLiteral
+    // to register a new anonymous static-storage object where both backends'
+    // codegen actually look for one (see ToplevelScope#definedGlobalScopeVariables,
+    // read via IR#scope(), not AST#definedVariables()/Declarations).
+    private ToplevelScope toplevelScope;
+    private long compoundLiteralSeq = 0;
 
     // #@@range/ctor{
     public IRGenerator(TypeTable typeTable, ErrorHandler errorHandler) {
@@ -24,6 +30,7 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
 
     // #@@range/generate{
     public IR generate(AST ast) throws SemanticException {
+        toplevelScope = ast.scope();
         for (DefinedVariable var : ast.definedVariables()) {
             if (var.hasInitializer()) {
                 if (var.initializer() instanceof AggregateLiteralNode) {
@@ -31,7 +38,8 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
                             var.type(), (AggregateLiteralNode) var.initializer(), 0)));
                 }
                 else {
-                    var.setIR(transformExpr(var.initializer()));
+                    var.setIR(foldTopLevelStaticConstant(var.location(),
+                            var.type(), var.initializer()));
                 }
             }
         }
@@ -190,7 +198,8 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
                             flattenStaticAggregate(var.type(), lit, 0)));
                 }
                 else {
-                    var.setIR(transformExpr(var.initializer()));
+                    var.setIR(foldTopLevelStaticConstant(var.location(),
+                            var.type(), var.initializer()));
                 }
             }
         }
@@ -996,17 +1005,75 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
         return result;
     }
 
-    /** Evaluates an AST expression to a constant IR literal (Int/Flo/Str)
-     *  at compile time, or returns null if it isn't one of the handful
-     *  of shapes this backend can fold without a real constant-folding
-     *  pass: a bare literal, a unary +/- of one, or a cast (as
+    /** The top-level (whole) initializer of a global or a "static" local,
+     *  when it isn't a "{...}" literal: unlike a nested aggregate leaf
+     *  (flattenStaticElement), this used to just trust transformExpr's
+     *  ordinary runtime-expression lowering unconditionally, since
+     *  DereferenceChecker's own isConstant() gate already limited what
+     *  could ever reach here to a bare literal (the only ExprNode
+     *  besides AggregateLiteralNode/CompoundLiteralNode/AddressNode that
+     *  reports itself constant). Now that AddressNode also always
+     *  reports itself constant -- deferring the real check here, same as
+     *  those other two -- this needs the same foldStaticConstant
+     *  validation an aggregate leaf already gets, so e.g.
+     *  "int *p = &arr[i];" with a non-constant "i" gets a clean
+     *  "not a compile-time constant" error instead of a backend crash on
+     *  an IR shape it doesn't know how to emit as static data. */
+    private Expr foldTopLevelStaticConstant(Location loc, Type type, ExprNode init) {
+        Expr value = foldStaticConstant(init);
+        if (value == null) {
+            errorHandler.error(loc, "initializer element is not a compile-time constant");
+            value = new Int(asmType(type), 0);
+        }
+        return value;
+    }
+
+    /** Evaluates an AST expression to a constant IR literal (Int/Flo/Str/
+     *  Addr) at compile time, or returns null if it isn't one of the
+     *  handful of shapes this backend can fold without a real constant-
+     *  folding pass: a bare literal, a unary +/- of one, a cast (as
      *  TypeChecker's implicitCast may have inserted, e.g. an int literal
-     *  initializing a float array member) wrapping one, recursively. */
+     *  initializing a float array member) wrapping one, a reference to a
+     *  named "const TYPE X = ...;" (or an enumerator)'s own (recursively
+     *  folded) value -- e.g. stddef.h's "const void* NULL = 0;", so
+     *  "struct node b = {..., NULL};" works: a "const"-declared top-level
+     *  variable is a Constant entity, not a real DefinedVariable at all
+     *  (see the "const"/defconst() grammar), and a Constant's "value" is
+     *  a plain compile-time substitution wherever it's referenced, the
+     *  same as IRGenerator's own visit(VariableNode) already resolves it
+     *  at runtime -- or "&" of a global variable or a compound literal
+     *  (see synthesizeStaticCompoundLiteral) -- C99 allows "&" of any
+     *  lvalue there, but this compiler only resolves those two shapes to
+     *  an actual link-time constant address; "&globalArray[i]" or
+     *  "&globalStruct.field", for instance, would need computing a
+     *  constant byte offset on top of the base address, which nothing
+     *  here does yet. */
     private Expr foldStaticConstant(ExprNode expr) {
         if (expr instanceof IntegerLiteralNode
                 || expr instanceof FloatLiteralNode
                 || expr instanceof StringLiteralNode) {
             return transformExpr(expr);
+        }
+        if (expr instanceof VariableNode) {
+            Entity ent = ((VariableNode) expr).entity();
+            if (ent.isConstant()) {
+                return foldStaticConstant(ent.value());
+            }
+            return null;
+        }
+        if (expr instanceof AddressNode) {
+            ExprNode target = ((AddressNode) expr).expr();
+            net.loveruby.cflat.asm.Type ptrT = asmType(((AddressNode) expr).type());
+            if (target instanceof VariableNode) {
+                return new Addr(ptrT, ((VariableNode) target).entity());
+            }
+            if (target instanceof CompoundLiteralNode) {
+                CompoundLiteralNode clit = (CompoundLiteralNode) target;
+                DefinedVariable backing = synthesizeStaticCompoundLiteral(
+                        clit.type(), clit.literal());
+                return new Addr(ptrT, backing);
+            }
+            return null;
         }
         if (expr instanceof UnaryOpNode) {
             UnaryOpNode u = (UnaryOpNode) expr;
@@ -1040,6 +1107,33 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
             return null;
         }
         return null;
+    }
+
+    /** Backs "&(type){...}" at static storage duration: a compound
+     *  literal has no name of its own to become a real global's symbol,
+     *  so this synthesizes one -- a fresh, private, anonymous
+     *  DefinedVariable holding the literal's flattened static data,
+     *  registered directly in the ToplevelScope both backends'
+     *  static-data codegen actually reads (see the toplevelScope field's
+     *  own comment; unlike a real source-level global, there's no reason
+     *  to also add it to AST#definedVariables()/Declarations, since
+     *  nothing reads that list again after IR generation). Passing "lit"
+     *  itself as the constructor's "initializer" only makes
+     *  hasInitializer() report true (so this lands in the backends'
+     *  *initialized*-data list, not their zero-filled/common-symbol
+     *  one) -- codegen never reads it back, since hasStaticInitEntries()
+     *  always takes precedence once set. */
+    private DefinedVariable synthesizeStaticCompoundLiteral(Type t, AggregateLiteralNode lit) {
+        DefinedVariable var = new DefinedVariable(true, new TypeNode(t),
+                "__cflat_compound_literal_" + compoundLiteralSeq++, lit);
+        var.setStaticInitEntries(normalizeStaticEntries(flattenStaticAggregate(t, lit, 0)));
+        try {
+            toplevelScope.defineEntity(var);
+        }
+        catch (SemanticException e) {
+            throw new Error("must not happen: " + e.getMessage());
+        }
+        return var;
     }
 
     //

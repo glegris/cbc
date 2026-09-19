@@ -42,8 +42,16 @@ public class CastNode extends ExprNode {
         return type().size() > expr.type().size();
     }
 
+    /** A compiler-synthesized cast (TypeChecker's implicitCast, via the
+     *  Type-only constructor above) has a bare TypeNode with no TypeRef
+     *  of its own, so typeNode.location() is null -- fall back to the
+     *  wrapped expression's location, so an error reported against a
+     *  synthesized cast (e.g. "not a compile-time constant" from
+     *  IRGenerator's static-initializer folding) still points somewhere
+     *  in the source instead of crashing on a null location. */
     public Location location() {
-        return typeNode.location();
+        Location loc = typeNode.location();
+        return (loc != null) ? loc : expr.location();
     }
 
     protected void _dump(Dumper d) {
