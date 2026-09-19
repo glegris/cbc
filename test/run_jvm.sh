@@ -46,7 +46,7 @@ declare -A KNOWN_DIFF=(
     [implicitaddr]="&printf is rejected: intrinsics have no real address on the JVM backend"
     [funcptr]="&printf is rejected: intrinsics have no real address on the JVM backend"
     [gvar]="taking the address of libc's stdin is not supported by the JVM backend"
-    [varargs]="variadic functions are not supported by the JVM backend"
+    [varargs]="&stdout (an external variable, not a function) is rejected the same way as gvar above -- unrelated to varargs themselves, which this backend does support"
 )
 
 report() {
@@ -191,6 +191,13 @@ for t in if1 if2 while1 while2 while-break while-continue dowhile1 dowhile2 \
          ulongops varargs; do
     run_exit0 "$t"
 done
+
+# varargs.cb itself (above) only exercises &stdout, a separate, already
+# known-diff limitation (see KNOWN_DIFF) -- this exercises the JVM
+# backend's actual variadic-function support (int/long/double varargs,
+# multiple call sites, a nested vararg call as an outer vararg's own
+# argument) end to end.
+run_case varargs2 "60;0;103;700"
 
 # --- pointers / arrays / structs / unions ---
 run_case array          "1;5;9"

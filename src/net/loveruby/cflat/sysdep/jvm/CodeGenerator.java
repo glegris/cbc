@@ -137,7 +137,10 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             "strlen", "strcpy", "strncpy", "strcat", "strncat", "strcmp",
             "strncmp", "strchr", "memcpy", "memmove", "memset", "memcmp",
             // <stdlib.h>
-            "abs", "labs", "atoi", "atol", "atof"
+            "abs", "labs", "atoi", "atol", "atof",
+            // <stdarg.h> -- va_init() is a separate compile-time
+            // intrinsic (see compileVaInit), not listed here.
+            "va_next"
     ));
 
     private final ErrorHandler errorHandler;
@@ -575,12 +578,6 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
     //
 
     private void compileFunction(DefinedFunction f) {
-        if (f.type().getFunctionType().isVararg()) {
-            errorHandler.error(f.location(),
-                    "variadic functions are not supported by the JVM backend: "
-                            + f.name() + "()");
-            return;
-        }
         String desc = methodDescriptor(f);
         int access = ACC_STATIC | (f.isPrivate() ? ACC_PRIVATE : ACC_PUBLIC);
         MethodVisitor mv = cw.visitMethod(access, f.name(), desc, null, null);
@@ -689,24 +686,31 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         for (CBCParameter p : f.parameters()) {
             paramTypes.add(p.type());
         }
-        return buildDescriptor(paramTypes, f.returnType());
+        return buildDescriptor(paramTypes, f.returnType(), f.type().getFunctionType().isVararg());
     }
 
     private String signatureDescriptor(net.loveruby.cflat.type.FunctionType ft) {
-        return buildDescriptor(ft.paramTypes(), ft.returnType());
+        return buildDescriptor(ft.paramTypes(), ft.returnType(), ft.isVararg());
     }
 
     /** Builds a JVM method descriptor for a cflat signature. A struct/union
      *  return type gets one extra trailing "J" parameter appended: see the
      *  class doc for the hidden-pointer convention this backend uses to
-     *  pass/return them by value. */
+     *  pass/return them by value. A vararg function gets one further
+     *  trailing "J" after that: the base address of the "..." tail's
+     *  marshalled values, always passed last -- see the class doc on
+     *  va_init()/va_next() and FunctionCompiler#varargSlot/
+     *  compileVarargTail(). */
     private String buildDescriptor(List<net.loveruby.cflat.type.Type> paramTypes,
-            net.loveruby.cflat.type.Type returnType) {
+            net.loveruby.cflat.type.Type returnType, boolean vararg) {
         StringBuilder sb = new StringBuilder("(");
         for (net.loveruby.cflat.type.Type t : paramTypes) {
             sb.append(paramOrReturnWidth(t).descriptor);
         }
         if (isAggregate(returnType)) {
+            sb.append("J");
+        }
+        if (vararg) {
             sb.append("J");
         }
         sb.append(")");
@@ -806,7 +810,13 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
     private void assignFunctionIds(IR ir) {
         for (DefinedFunction f : ir.definedFunctions()) {
             if (f.type().getFunctionType().isVararg()) {
-                continue;  // never gets a body either (see compileFunction); can't be dispatched to
+                // Still gets a body (see compileFunction), but a vararg
+                // function's own descriptor carries a hidden trailing
+                // parameter only compileCallInto ever supplies at a
+                // known, direct call site (see compileVarargTail) --
+                // there's no way to call one through a plain function
+                // pointer, so it never needs (or gets) an id here.
+                continue;
             }
             functionId.put(f, nextFunctionId++);
             String desc = methodDescriptor(f);
@@ -1043,6 +1053,15 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         private final int copyDestScratch;
         private final int copySrcScratch;
         private final int hiddenOutputSlot;
+        /** The hidden trailing "..." tail address a vararg function
+         *  receives (see buildDescriptor/compileVarargTail), or -1 if
+         *  this function isn't vararg. va_init() (see compileVaInit)
+         *  just loads this directly, ignoring its own cflat-visible
+         *  argument entirely. */
+        private final int varargSlot;
+        /** Next never-yet-used local slot beyond every fixed one laid
+         *  out below -- see allocScratchLong(). */
+        private int nextScratchSlot;
         private final org.objectweb.asm.Label epilogueLabel = new org.objectweb.asm.Label();
         private Location currentLocation;
 
@@ -1067,6 +1086,15 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             }
             else {
                 hiddenOutputSlot = -1;
+            }
+            if (func.type().getFunctionType().isVararg()) {
+                // Hidden trailing "..." tail address (see buildDescriptor);
+                // always the very last parameter.
+                varargSlot = jvmSlot;
+                jvmSlot += 2;
+            }
+            else {
+                varargSlot = -1;
             }
 
             long off = 0;
@@ -1098,6 +1126,8 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             copyDestScratch = jvmSlot;
             jvmSlot += 2;
             copySrcScratch = jvmSlot;
+            jvmSlot += 2;
+            nextScratchSlot = jvmSlot;
         }
 
         /** Recursively lays out one block scope's own variables starting
@@ -1130,6 +1160,24 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             this.copyDestScratch = -1;
             this.copySrcScratch = -1;
             this.hiddenOutputSlot = -1;
+            this.varargSlot = -1;
+            this.nextScratchSlot = 0;
+        }
+
+        /** A fresh, never-reused local long slot for one vararg call
+         *  site's own marshalled-block base address (see
+         *  compileVarargTail): compiling one of that call's own
+         *  arguments can itself contain another (nested) vararg call,
+         *  which needs its own base-address slot alive at the same time
+         *  -- reusing a single fixed slot for both would let the inner
+         *  call's write clobber the outer one's. Slots are never freed;
+         *  a function body only has so many lexical call sites, so this
+         *  never grows unbounded, and ClassWriter.COMPUTE_FRAMES sizes
+         *  maxLocals automatically regardless of how high this climbs. */
+        private int allocScratchLong() {
+            int slot = nextScratchSlot;
+            nextScratchSlot += 2;
+            return slot;
         }
 
         void run() {
@@ -2091,6 +2139,10 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                     compilePrintf(node);
                     return;
                 }
+                if (name.equals("va_init") && node.args().size() == 1) {
+                    compileVaInit(node);
+                    return;
+                }
                 if (f.type().getFunctionType().isVararg()) {
                     error("variadic external functions are not supported by "
                             + "the JVM backend: " + name + "()");
@@ -2103,14 +2155,99 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                 return;
             }
             DefinedFunction df = (DefinedFunction) f;
-            for (Expr arg : node.args()) {
-                compileArg(arg);
+            List<Expr> allArgs = node.args();
+            int fixedCount = df.parameters().size();
+            for (int i = 0; i < fixedCount; i++) {
+                compileArg(allArgs.get(i));
+            }
+            if (df.type().getFunctionType().isVararg()) {
+                compileVarargTail(allArgs, fixedCount);
             }
             if (isAggregate(df.returnType())) {
                 pushAggregateDest(destAddrExpr, df.returnType().size());
             }
             mv.visitMethodInsn(INVOKESTATIC, className, df.name(),
                     methodDescriptor(df), false);
+        }
+
+        /** va_init(arg): on this backend, "arg" (always "&lastParam" in
+         *  practice -- see lib/stdarg.cb) is never actually used. Unlike
+         *  x86, where the whole call/frame layout naturally puts every
+         *  argument (fixed and variadic) in one contiguous block so
+         *  "&lastParam + 1" already IS the first vararg value's address,
+         *  a JVM call has no such contiguous memory to point into --
+         *  this function's own "..." tail was separately marshalled by
+         *  its caller (see compileVarargTail) into its own freshly
+         *  allocated block, whose address arrived as the hidden trailing
+         *  parameter in varargSlot. So va_init here is simply: load that.
+         *  va_next() (see StandardRuntime) then needs no JVM-specific
+         *  treatment at all -- it's plain pointer arithmetic over
+         *  whatever address va_init happened to hand it, exactly as
+         *  lib/stdarg.cb already defines it for x86. */
+        private void compileVaInit(Call node) {
+            if (varargSlot < 0) {
+                error("va_init() used outside a variadic function");
+                pushDummy(node.type());
+                return;
+            }
+            mv.visitVarInsn(LLOAD, varargSlot);
+        }
+
+        /** Marshals a vararg call's trailing ("...") arguments into a
+         *  freshly allocated block of consecutive 8-byte slots in $mem --
+         *  one slot per argument, raw long bits for integers/pointers,
+         *  the same-width raw double bits (per C's own default argument
+         *  promotion: a float vararg always arrives as a double, see
+         *  emitPrintFloat's identical reasoning) for floating-point --
+         *  then pushes that block's base address as the hidden trailing
+         *  parameter buildDescriptor() gives every vararg function (or a
+         *  bare 0 if this call happens to pass none, e.g. "f(x)" for
+         *  "f(int x, ...)"). va_next() (see StandardRuntime) reads them
+         *  back in the same order with plain pointer arithmetic, exactly
+         *  like x86's own stack-based layout, just relocated to a block
+         *  this backend controls instead of a real call stack.
+         *
+         *  Each argument's own value may itself be an arbitrary
+         *  expression -- including another (nested) vararg call -- so
+         *  the block's base address lives in a scratch local dedicated
+         *  to this one call site (see allocScratchLong()), not on the
+         *  operand stack across that nested compile, where a colliding
+         *  reuse could otherwise clobber it before this loop is done
+         *  reading it back on a later iteration. */
+        private void compileVarargTail(List<Expr> allArgs, int fixedCount) {
+            int tailCount = allArgs.size() - fixedCount;
+            if (tailCount <= 0) {
+                mv.visitInsn(LCONST_0);
+                return;
+            }
+            int base = allocScratchLong();
+            mv.visitLdcInsn((long) tailCount * 8);
+            mv.visitMethodInsn(INVOKESTATIC, className, ALLOC_METHOD, "(J)J", false);
+            mv.visitVarInsn(LSTORE, base);
+            for (int i = 0; i < tailCount; i++) {
+                Expr arg = allArgs.get(fixedCount + i);
+                pushBuf();
+                mv.visitVarInsn(LLOAD, base);
+                if (i > 0) {
+                    mv.visitLdcInsn((long) i * 8);
+                    mv.visitInsn(LADD);
+                }
+                mv.visitInsn(L2I);
+                net.loveruby.cflat.asm.Type rw = resultWidth(arg);
+                compile(arg);
+                if (rw.isFloat()) {
+                    coerceWidth(rw, net.loveruby.cflat.asm.Type.FLOAT64);
+                    mv.visitMethodInsn(INVOKEVIRTUAL, BUF_CLASS, "putDouble",
+                            "(ID)" + BUF_DESC, false);
+                }
+                else {
+                    coerceWidth(rw, net.loveruby.cflat.asm.Type.INT64);
+                    mv.visitMethodInsn(INVOKEVIRTUAL, BUF_CLASS, "putLong",
+                            "(IJ)" + BUF_DESC, false);
+                }
+                mv.visitInsn(POP);
+            }
+            mv.visitVarInsn(LLOAD, base);
         }
 
         /** Any external function other than the three compile-time

@@ -1,0 +1,67 @@
+import stdio;
+import stdarg;
+
+static int
+sumints(int n, ...)
+{
+        va_list ap;
+        int total;
+        int i;
+
+        ap = va_init(&n);
+        total = 0;
+        i = 0;
+        while (i < n) {
+                total = total + (int)va_next(&ap);
+                i = i + 1;
+        }
+        return total;
+}
+
+static long
+suml(int n, ...)
+{
+        va_list ap;
+        long total;
+        int i;
+
+        ap = va_init(&n);
+        total = 0;
+        i = 0;
+        while (i < n) {
+                total = total + (long)va_next(&ap);
+                i = i + 1;
+        }
+        return total;
+}
+
+static double
+sumd(int n, ...)
+{
+        va_list ap;
+        double total;
+        int i;
+        long raw;
+
+        ap = va_init(&n);
+        total = 0.0;
+        i = 0;
+        while (i < n) {
+                raw = (long)va_next(&ap);
+                total = total + *(double*)&raw;
+                i = i + 1;
+        }
+        return total;
+}
+
+int
+main(int argc, char **argv)
+{
+        printf("%d;", sumints(3, 10, 20, 30));
+        printf("%d;", sumints(0));
+        /* a nested vararg call as one of the outer call's own variadic
+           arguments, to exercise the reentrancy-safe scratch handling */
+        printf("%d;", 100 + (int)suml(1, suml(2, 1L, 2L)));
+        printf("%d\n", (int)(sumd(3, 1.5, 2.5, 3.0) * 100.0));
+        return 0;
+}

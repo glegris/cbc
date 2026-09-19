@@ -1,5 +1,7 @@
 package net.loveruby.cflat.sysdep.jvm.runtime;
 
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.Arrays;
 
 /**
@@ -57,8 +59,15 @@ public class StandardRuntime {
 
     protected final byte[] mem;
 
+    /** Typed little-endian access over the same array as "mem" (matching
+     *  the generated class's own "$buf", which wraps this identical
+     *  array reference) -- used by va_next() below for a plain 8-byte
+     *  read/increment, sparing it manual byte-shifting. */
+    private final ByteBuffer buf;
+
     public StandardRuntime() {
         this.mem = new byte[HEAP_SIZE];
+        this.buf = ByteBuffer.wrap(mem).order(ByteOrder.LITTLE_ENDIAN);
     }
 
     //
@@ -300,6 +309,28 @@ public class StandardRuntime {
         catch (NumberFormatException ex) {
             return 0.0;
         }
+    }
+
+    //
+    // <stdarg.h> -- va_next() is the only half of cflat's va_list support
+    // (see lib/stdarg.cb) that needs a JVM-specific implementation:
+    // va_init() itself is a CodeGenerator compile-time intrinsic (see
+    // compileVaInit), since only the compiler knows where a given
+    // function's "..." tail was marshalled to (see compileVarargTail) --
+    // but once va_init() has handed back that address, walking forward
+    // through it one 8-byte slot at a time is just ordinary pointer
+    // arithmetic, identical in spirit to lib/stdarg.cb's own x86
+    // implementation ("va_arg_t arg = **ap; (*ap)++; return arg;"), just
+    // expressed here directly against "buf" instead of relying on cflat
+    // pointer dereference codegen.
+    //
+
+    public long va_next(long apAddr) {
+        int a = at(apAddr);
+        long valueAddr = buf.getLong(a);
+        long value = buf.getLong(at(valueAddr));
+        buf.putLong(a, valueAddr + 8);
+        return value;
     }
 
     //

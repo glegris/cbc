@@ -378,6 +378,28 @@ C-style address space:
     rejects any use of `float`/`double` at code generation time instead
     of miscompiling it. There is no `long double` (a plain or
     `L`-suffixed floating constant is just a `double`).
+  * **variadic functions**: defining one (`int myprintf(char *fmt, ...)`)
+    and calling it both work, for `int`/`long`/pointer and `float`/`double`
+    (promoted to `double`, per C's own default argument promotion)
+    arguments, using cflat's existing `va_list`/`va_init()`/`va_next()`
+    (`import stdarg`, see `lib/stdarg.cb`) -- unchanged from the x86
+    backend's own implementation of those three, despite the JVM having
+    no equivalent of a real, contiguous call stack to point into: a call
+    to a vararg function marshals its "..." arguments into a small,
+    freshly allocated block in this backend's own simulated address
+    space instead (one 8-byte slot per argument), and passes that
+    block's address as an extra, hidden parameter every vararg function
+    receives -- `va_init()` just hands it back directly (as a JVM-backend
+    compile-time intrinsic, alongside `printf` and friends), after which
+    `va_next()`'s own implementation (a real `StandardRuntime` method,
+    `long va_next(long ap)`) is plain pointer arithmetic, exactly as
+    `lib/stdarg.cb` already expects. Not supported: taking the address of
+    a variadic function, or calling one through a function pointer
+    (same restriction plain function pointers already have on this
+    backend), and a variadic *external* function declared but not
+    defined in the same file (there being no real vararg calling
+    convention to call into, unlike a fixed-arity one -- see
+    `StandardRuntime`/`NativeRuntime` below).
 
 Remaining gaps: `putchar(int)`, `puts(char*)` and `printf(char*, ...)` are
 compile-time intrinsics (`printf`'s format string itself must still be a
