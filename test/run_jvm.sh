@@ -227,6 +227,7 @@ run_case const          "16;16;16;msgstring"
 run_case initializer    "4;80;0;local"
 run_case funcptr        "OK;OK;OK;OK"
 run_case designated-init "1;2;3;4;10;11;0;0;30;31;1;5;9;0;99;2"
+run_case compound-literal-static "7;8;100;200;11;12"
 
 # --- preprocessor: variadic macros (incl. GNU ", ##__VA_ARGS__" comma
 # elision), predefined macros, and #line's effect on __LINE__ ---

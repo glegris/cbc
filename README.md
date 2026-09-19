@@ -230,15 +230,26 @@ described below:
     the rest of the enclosing block, same as a variable declared there.
     `T x = (T){...};` (the type name is then redundant, since `x`'s own
     type already says the same thing) is recognized as exactly
-    equivalent to `T x = {...};`, not a separate hidden copy. Two scope
-    limits: only usable inside a function body -- not as a global/static
-    variable's own initializer, since a compound literal's *normal*
-    (automatic-storage) form needs a function to be local to, and this
-    doesn't yet also support the *static*-storage-duration form C99
-    allows at file scope -- and, matching this compiler's aggregate
-    initializers generally, the array/struct/union's own type must be
-    written out in full (`(int[])`, without a length, to infer it from
-    the initializer list the way C99 itself allows, isn't supported).
+    equivalent to `T x = {...};`, not a separate hidden copy -- which is
+    also how it gets **static storage duration**, matching real C99, when
+    written as a global's or a `static` local's whole initializer
+    (`struct point origin = (struct point){0, 0};`) or as an
+    already-braced nested element of one
+    (`int[2] pair = {(int){1}, (int){2}};`): both are recognized the same
+    way before storage duration is even decided, so they fall out of the
+    ordinary global/static initializer path, not the automatic-storage
+    one. Two scope limits remain: a compound literal nested inside some
+    *other* expression -- addressed (`&(struct point){1,2}`), passed
+    straight to a function, or with a member immediately accessed off it
+    -- still only has automatic storage duration, so still needs a
+    function body to be local to (this is really the same "taking the
+    address of anything isn't supported in a static initializer"
+    limitation that already applies to a plain global, not something
+    specific to compound literals); and, matching this compiler's
+    aggregate initializers generally, the array/struct/union's own type
+    must be written out in full (`(int[])`, without a length, to infer it
+    from the initializer list the way C99 itself allows, isn't
+    supported).
   * **`long long`/`unsigned long long`**: a real, distinct 8-byte integer
     type (`sizeof(long long) == 8`), including the `LL`/`ULL`/`LU`/`UL`
     literal suffixes (`123456789012345LL`), usable anywhere a type can

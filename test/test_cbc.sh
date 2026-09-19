@@ -40,6 +40,7 @@ test_06_variables() {
     assert_out "1;2;3;4;5" ./lvar2
     assert_out "4;80;0;local" ./initializer
     assert_out "1;2;3;4;10;11;0;0;30;31;1;5;9;0;99;2" ./designated-init
+    assert_out "7;8;100;200;11;12" ./compound-literal-static
     assert_out "16;16;16;msgstring" ./const
     assert_compile_error var-semcheck.c
 

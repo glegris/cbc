@@ -809,24 +809,29 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
                 + "generic expression transformation");
     }
 
-    // A C99 compound literal ("(type){...}") is lowered exactly like
-    // "type @tmp = {...};" would be -- a fresh compiler-synthesized
-    // local (same tmpVar() mechanism used for e.g. an assignment used as
-    // an expression), initialized in place right here, evaluating to a
-    // reference to it. Since IR generation for the whole function
-    // finishes before either backend computes the function's frame
-    // layout, this tmp is picked up by that layout automatically, same
-    // as any other local.
+    // A compound literal reaches generic expression transformation only
+    // when it's nested inside some other expression rather than being a
+    // whole initializer itself (see CompoundLiteralNode's own doc
+    // comment) -- e.g. "&(type){...}", or as a function-call argument --
+    // in which case it's lowered exactly like "type @tmp = {...};" would
+    // be: a fresh compiler-synthesized local (same tmpVar() mechanism
+    // used for e.g. an assignment used as an expression), initialized in
+    // place right here, evaluating to a reference to it. Since IR
+    // generation for the whole function finishes before either backend
+    // computes the function's frame layout, this tmp is picked up by
+    // that layout automatically, same as any other local.
     public Expr visit(CompoundLiteralNode node) {
         if (scopeStack == null) {
-            // Not inside a function body -- e.g. a global/static
-            // variable's own initializer ("int *p = (int[]){1,2,3};").
-            // Scope note: only usable inside a function body for now,
-            // where it always has automatic storage duration; there's no
-            // local scope here to allocate the backing tmp variable in,
-            // and giving it static storage instead (like the global it's
-            // initializing) would need a separate lowering path this
-            // doesn't have yet.
+            // Not inside a function body -- e.g. "int *p = &(int[]){1,2,3};"
+            // as a global/static variable's own initializer. Scope note:
+            // this general, nested-in-an-arbitrary-expression shape is
+            // still only usable inside a function body, where it always
+            // has automatic storage duration; there's no local scope here
+            // to allocate the backing tmp variable in, and this is really
+            // the same "address of anything as a static initializer isn't
+            // supported" limitation that already applies to e.g.
+            // "int *p = &some_global;" -- not something specific to
+            // compound literals to fix on its own.
             errorHandler.error(node.location(),
                     "compound literal is not supported here (only inside a function body)");
             return new Int(asmType(node.type()), 0);
@@ -968,6 +973,17 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
             long offset) {
         if (elemInit instanceof AggregateLiteralNode) {
             return flattenStaticAggregate(elemType, (AggregateLiteralNode) elemInit, offset);
+        }
+        if (elemInit instanceof CompoundLiteralNode) {
+            // "{ ..., (T){...}, ... }" nested inside a static aggregate:
+            // TypeChecker only accepts this when the compound literal's
+            // own type already matches elemType exactly (implicitCast is
+            // a no-op for equal types, the only way an aggregate type
+            // ever "casts" to itself here), so recursing into its brace
+            // list the same way an already-unwrapped nested
+            // AggregateLiteralNode would is safe.
+            CompoundLiteralNode clit = (CompoundLiteralNode) elemInit;
+            return flattenStaticAggregate(elemType, clit.literal(), offset);
         }
         List<StaticInitEntry> result = new ArrayList<StaticInitEntry>();
         Expr value = foldStaticConstant(elemInit);
