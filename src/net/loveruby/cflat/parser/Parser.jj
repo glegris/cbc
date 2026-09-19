@@ -20,55 +20,37 @@ import java.util.*;
 import java.io.*;
 
 public class Parser {
-    static public AST parseFile(File file, LibraryLoader loader,
+    static public AST parseFile(File file, List<String> includePaths,
                                 ErrorHandler errorHandler)
                                 throws SyntaxException, FileException {
-        return parseFile(file, loader, errorHandler, false);
+        return parseFile(file, includePaths, errorHandler, false);
     }
 
     // #@@range/parseFile{
-    static public AST parseFile(File file, LibraryLoader loader,
+    static public AST parseFile(File file, List<String> includePaths,
                                 ErrorHandler errorHandler, boolean debug)
                                 throws SyntaxException, FileException {
-        return newFileParser(file, loader, errorHandler, debug).parse();
+        return newFileParser(file, includePaths, errorHandler, debug).parse();
     }
     // #@@}
-
-    static public Declarations parseDeclFile(File file,
-                                             LibraryLoader loader,
-                                             ErrorHandler errorHandler)
-                                             throws SyntaxException,
-                                                    FileException {
-        return parseDeclFile(file, loader, errorHandler, false);
-    }
-
-    static public Declarations parseDeclFile(File file,
-                                             LibraryLoader loader,
-                                             ErrorHandler errorHandler,
-                                             boolean debug)
-                                             throws SyntaxException,
-                                                    FileException {
-        return newFileParser(file, loader, errorHandler, debug).parseDecls();
-    }
 
     // #@@range/newFileParser{
     static final public String SOURCE_ENCODING = "UTF-8";
 
     static public Parser newFileParser(File file,
-                                       LibraryLoader loader,
+                                       List<String> includePaths,
                                        ErrorHandler errorHandler,
                                        boolean debug)
                                        throws FileException {
         String src = new net.loveruby.cflat.cpp.Preprocessor(
-                loader.loadPath(), errorHandler).preprocessFile(file);
+                includePaths, errorHandler).preprocessFile(file);
         Reader r = new StringReader(src);
-        return new Parser(r, file.getPath(), loader, errorHandler, debug);
+        return new Parser(r, file.getPath(), errorHandler, debug);
     }
     // #@@}
 
     // #@@range/instance_members{
     private String sourceName;
-    private LibraryLoader loader;
     private ErrorHandler errorHandler;
     private Set<String> knownTypedefs;
     // Where a struct/union/enum defined *inside* a function body (see
@@ -80,18 +62,16 @@ public class Parser {
     // #@@}
 
     // #@@range/ctor1{
-    public Parser(Reader s, String name,
-                  LibraryLoader loader, ErrorHandler errorHandler) {
-        this(s, name, loader, errorHandler, false);
+    public Parser(Reader s, String name, ErrorHandler errorHandler) {
+        this(s, name, errorHandler, false);
     }
     // #@@}
 
     // #@@range/ctor2{
-    public Parser(Reader s, String name, LibraryLoader loader,
+    public Parser(Reader s, String name,
                   ErrorHandler errorHandler, boolean debug) {
         this(s);
         this.sourceName = name;
-        this.loader = loader;
         this.errorHandler = errorHandler;
         this.knownTypedefs = new HashSet<String>();
         if (debug) {
@@ -119,24 +99,6 @@ public class Parser {
         }
     }
     // #@@}
-
-    public Declarations parseDecls() throws SyntaxException {
-        try {
-            return declaration_file();
-        }
-        catch (TokenMgrError ex) {
-            throw new SyntaxException(ex.getMessage());
-        }
-        catch (ParseException ex) {
-            throw new SyntaxException(ex.getMessage());
-        }
-    }
-
-    private void addKnownTypedefs(List<TypedefNode> typedefs) {
-        for (TypedefNode n : typedefs) {
-            addType(n.name());
-        }
-    }
 
     private void addType(String name) {
         knownTypedefs.add(name);
@@ -410,7 +372,6 @@ TOKEN: {
     | <CONTINUE : "continue">
     | <GOTO     : "goto">
     | <TYPEDEF  : "typedef">
-    | <IMPORT   : "import">
     | <SIZEOF   : "sizeof">
 }
 // #@@}
@@ -492,102 +453,44 @@ MORE: { <"\""> : IN_STRING }                           // rule1
 AST compilation_unit():
 {
     Token t;
-    Declarations impdecls, decls;
+    Declarations decls;
 }
 {
         {
             t = getToken(1);
         }
-    impdecls=import_stmts() decls=top_defs() <EOF>
+    decls=top_defs() <EOF>
         {
-            decls.add(impdecls);
             return new AST(location(t), decls);
         }
 }
 // #@@}
 
-// #@@range/declaration_file{
-Declarations declaration_file():
-{
-    Declarations impdecls, decls = new Declarations();
-    UndefinedFunction funcdecl;
-    UndefinedVariable vardecl;
-    Constant defconst;
-    StructNode defstruct;
-    UnionNode defunion;
-    Declarations defenum;
-    TypedefNode typedef;
-}
-{
-    impdecls=import_stmts()
-        {
-            decls.add(impdecls);
-        }
-    ( LOOKAHEAD(<EXTERN> [<INLINE>] typeref() <IDENTIFIER> "(")
-      funcdecl=funcdecl()   { decls.addFuncdecl(funcdecl); }
-    | vardecl=vardecl()     { decls.addVardecl(vardecl); }
-    | defconst=defconst()   { decls.addConstant(defconst); }
-    | defstruct=defstruct() { decls.addDefstruct(defstruct); }
-    | defunion=defunion()   { decls.addDefunion(defunion); }
-    | defenum=defenum()     { decls.add(defenum); }
-    | typedef=typedef()     { decls.addTypedef(typedef); }
-    )*
-    <EOF>
-        {
-            return decls;
-        }
-}
-// #@@}
-
-// #@@range/import_stmts{
-Declarations import_stmts():
-{
-    String libid;
-    Declarations impdecls = new Declarations();
-}
-{
-    (libid=import_stmt()
-        {
-            try {
-                Declarations decls = loader.loadLibrary(libid, errorHandler);
-                if (decls != null) {
-                    impdecls.add(decls);
-                    addKnownTypedefs(decls.typedefs());
-                }
-            }
-            catch (CompileException ex) {
-                throw new ParseException(ex.getMessage());
-            }
-        }
-    )*
-        {
-            return impdecls;
-        }
-}
-// #@@}
-
-// #@@range/import_stmt{
-String import_stmt():
-{
-    StringBuffer buf = new StringBuffer();
-    String n;
-}
-{
-    <IMPORT> n=name()   { buf.append(n); }
-    ("." n=name()       { buf.append("."); buf.append(n); } )*
-    ";"
-        {
-            return buf.toString();
-        }
-}
-// #@@}
-
 // #@@range/top_defs{
+// A "#include"d header (already spliced in as plain text by the
+// preprocessor, long before this ever runs) and the file that included
+// it are parsed as one single, flat token stream, so this has to accept
+// both real definitions (defun/defvars/...) *and* bare declarations
+// (funcdecl/vardecl -- "extern int f(int);"/"extern int x;", a header's
+// usual content) in the same repetition: there's no separate grammar
+// entry point for "declarations only" the way a once-existed "import"
+// system needed. funcdecl/vardecl are only ever reached when the next
+// token is "extern" (storage() -- used by defun() -- never accepts it),
+// so there's no real ambiguity to resolve beyond the lookahead already
+// needed to tell "extern int f(int);" (a declaration) from
+// "extern int f(int x)" followed by "{" (a definition), which this
+// compiler has never actually supported (matching real C's own
+// "extern" storage class on a function *definition* being legal but
+// rare); the token immediately following the "extern" declaration
+// forms determines which of the two it is far enough ahead for a plain
+// LOOKAHEAD.
 Declarations top_defs():
 {
     Declarations decls = new Declarations();
     DefinedFunction defun;
     List<DefinedVariable> defvars;
+    UndefinedFunction funcdecl;
+    UndefinedVariable vardecl;
     Constant defconst;
     StructNode defstruct;
     UnionNode defunion;
@@ -598,6 +501,10 @@ Declarations top_defs():
         { topDecls = decls; }
     ( LOOKAHEAD(storage() typeref() <IDENTIFIER> "(")
       defun=defun()         { decls.addDefun(defun); }
+    | LOOKAHEAD(<EXTERN> [<INLINE>] typeref() <IDENTIFIER> "(")
+      funcdecl=funcdecl()   { decls.addFuncdecl(funcdecl); }
+    | LOOKAHEAD(<EXTERN>)
+      vardecl=vardecl()     { decls.addVardecl(vardecl); }
     | LOOKAHEAD(<CONST> type() <IDENTIFIER> "=")
       defconst=defconst()   { decls.addConstant(defconst); }
     | LOOKAHEAD(3)

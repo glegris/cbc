@@ -1,5 +1,4 @@
 package net.loveruby.cflat.compiler;
-import net.loveruby.cflat.parser.LibraryLoader;
 import net.loveruby.cflat.type.TypeTable;
 import net.loveruby.cflat.asm.*;
 import net.loveruby.cflat.sysdep.*;
@@ -22,7 +21,9 @@ class Options {
     private Platform platform = new X86Linux();
     private String outputFileName;
     private boolean verbose = false;
-    private LibraryLoader loader = new LibraryLoader();
+    // "#include" search path (same list "-I" has always fed, back when
+    // it also fed the now-removed "import" system's own library loader).
+    private List<String> includePaths = new ArrayList<String>(Arrays.asList("."));
     private boolean debugParser = false;
     private CodeGeneratorOptions genOptions = new CodeGeneratorOptions();
     private AssemblerOptions asOptions = new AssemblerOptions();
@@ -98,8 +99,8 @@ class Options {
         return this.debugParser;
     }
 
-    LibraryLoader loader() {
-        return this.loader;
+    List<String> includePaths() {
+        return this.includePaths;
     }
 
     TypeTable typeTable() {
@@ -157,7 +158,7 @@ class Options {
                     mode = CompilerMode.fromOption(arg);
                 }
                 else if (arg.startsWith("-I")) {
-                    loader.addLoadPath(getOptArg(arg, args));
+                    includePaths.add(getOptArg(arg, args));
                 }
                 else if (arg.equals("--debug-parser")) {
                     debugParser = true;

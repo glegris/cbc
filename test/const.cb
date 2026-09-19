@@ -1,4 +1,4 @@
-import stdio;
+#include "stdio.h"
 
 const int RTLD_LAZY = 0x10;
 const char* MSG = "msgstring";

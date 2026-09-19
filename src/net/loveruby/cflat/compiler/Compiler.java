@@ -82,7 +82,7 @@ public class Compiler {
         for (SourceFile src : opts.sourceFiles()) {
             try {
                 String result = new net.loveruby.cflat.cpp.Preprocessor(
-                        opts.loader().loadPath(), errorHandler)
+                        opts.includePaths(), errorHandler)
                         .preprocessFile(new File(src.path()));
                 if (errorHandler.errorOccured()) {
                     failed = true;
@@ -260,7 +260,7 @@ public class Compiler {
     public AST parseFile(String path, Options opts)
                             throws SyntaxException, FileException {
         return Parser.parseFile(new File(path),
-                opts.loader(), errorHandler, opts.doesDebugParser());
+                opts.includePaths(), errorHandler, opts.doesDebugParser());
     }
 
     public AST semanticAnalyze(AST ast, TypeTable types,

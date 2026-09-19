@@ -1,4 +1,4 @@
-import stdarg;
+#include "stdarg.h"
 
 va_list
 va_init(void *arg)

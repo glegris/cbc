@@ -43,7 +43,13 @@ public class IntegerType extends Type {
     }
 
     public boolean isCastableTo(Type target) {
-        return (target.isInteger() || target.isPointer() || target.isFloat());
+        // "(void)expr;" (C99 6.3.2.2: a void cast explicitly discards a
+        // value) is common enough -- e.g. silencing an unused-value
+        // warning, or a macro that only conditionally evaluates to
+        // something meaningful (see import/assert.h) -- to accept
+        // universally rather than reject as "no such cast".
+        return (target.isInteger() || target.isPointer() || target.isFloat()
+                || target.isVoid());
     }
 
     public long size() {

@@ -208,11 +208,7 @@ described below:
     covers the overwhelming majority of real uses. `<stdbool.h>` isn't a
     real header in C99 either -- it's three macros (`bool`, `true`,
     `false`) over the actual `_Bool` keyword -- so use `#include
-    "stdbool.h"` (found via the same `-I` used for `import`; see
-    `import/stdbool.h`), not `import stdbool;`: an `import`ed file's
-    macros are never visible to the file that imports it (only its
-    compiled declarations are), so this only works through the
-    preprocessor's own `#include`.
+    "stdbool.h"` (see `import/stdbool.h`), same as any other header.
   * **`inline`**: parses (alone or combined with `static`, in either
     order) and is otherwise a pure no-op -- neither backend has an
     inliner, so it's accepted purely as documentation/a hint, exactly
@@ -265,10 +261,10 @@ described below:
 
 ## Preprocessor
 
-Every `.cb`/`.hb` file is now run through a real C-style preprocessor
-before it reaches the parser, on both backends. It's a token-based pass
-(not raw text substitution), so it gets macro-argument handling, `#`/`##`
-and recursive macro expansion right rather than approximately right:
+Every `.cb` file is now run through a real C-style preprocessor before it
+reaches the parser, on both backends. It's a token-based pass (not raw
+text substitution), so it gets macro-argument handling, `#`/`##` and
+recursive macro expansion right rather than approximately right:
 
   * **Object-like and function-like macros**: `#define VERSION 42` and
     `#define ADD(a, b) ((a) + (b))`. Arguments are macro-expanded before
@@ -308,10 +304,11 @@ and recursive macro expansion right rather than approximately right:
     logical, comparison, shifts, `?:`, `defined(NAME)`/`defined NAME`) at
     the usual precedence.
   * **`#include "..."`/`#include <...>`**, searched next to the including
-    file (quoted form only) and then on the same `-I` path used for
-    `import`; `#error "message"` aborts the compile with that message,
-    and `#pragma`/the equivalent `_Pragma("...")` operator are both
-    accepted and silently ignored (no pragma this compiler acts on).
+    file (quoted form only) and then on the `-I` path (see "Standard
+    headers" below for what ships in `import/`); `#error "message"`
+    aborts the compile with that message, and `#pragma`/the equivalent
+    `_Pragma("...")` operator are both accepted and silently ignored (no
+    pragma this compiler acts on).
   * **`#line NUMBER ["FILENAME"]`**: adjusts what `__LINE__`/`__FILE__`
     report from the next line onward. This is genuinely as far as it
     goes: it can't redirect what the *rest* of the compiler itself
@@ -333,6 +330,65 @@ added. `#line` corrects `__LINE__`/`__FILE__` for this, but -- same as
 `#include` -- has no way to correct what the rest of the compiler
 reports, since nothing downstream of the preprocessor knows anything
 beyond a line's position in the one, already-flattened text it receives.
+
+## Standard headers
+
+cflat used to have its own, separate way to pull in a header:
+`import stdio;`/`import sys.types;` (dots standing in for a path),
+resolved by a dedicated `LibraryLoader` against a `.hb`-suffixed file
+and merged in as compiled declarations, never as text -- meaning an
+imported file's own macros were never visible to the file that imported
+it. **That whole mechanism is gone.** A cflat file now only ever pulls
+in another one exactly like real C does: `#include "stdio.h"` (searched
+next to the including file first) or `#include <stdio.h>` (searched on
+`-I`), going through the same preprocessor pass as everything else, so
+a header's own macros (and anything it further `#include`s) are fully
+visible to whatever includes it. Every header below now lives directly
+under `import/` (or `import/sys/` for `<sys/types.h>`) with a real `.h`
+name, and -- since plain `#include` has no built-in "already included"
+tracking the old loader's caching gave it for free -- every one of them
+has its own `#ifndef`/`#define`/`#endif` include guard, so including
+the same header more than once (directly, or transitively through two
+different other headers) is always safe.
+
+What ships in `import/`, organized like the standard itself:
+
+  * **C99**: `<stdio.h>`, `<stdlib.h>`, `<string.h>`, `<stdarg.h>`,
+    `<stddef.h>`, `<stdbool.h>`, `<ctype.h>`, `<assert.h>`, `<limits.h>`,
+    `<float.h>`, `<stdint.h>` (the fixed-width `intN_t`/`uintN_t` types
+    and their `INTN_MIN`/`INTN_MAX`/`UINTN_MAX` macros, plus
+    `intptr_t`/`uintptr_t`, not every optional "least"/"fast" variant).
+    `<ctype.h>`, `<assert.h>`, `<limits.h>`, `<float.h>` and `<stdint.h>`
+    are new: `<ctype.h>` in particular declares functions
+    (`isdigit`/`isalpha`/...) that were already implemented in
+    `StandardRuntime.java` but had no header at all before, so nothing
+    could actually call them without declaring them by hand first.
+    `<assert.h>`'s `assert()` needed one small new thing to be
+    expressible at all: this compiler has no comma operator, so its
+    usual `(expr) || (fprintf(...), abort(), 0)` form doesn't work here
+    -- see the header's own comment for the (still library-free)
+    workaround. `<limits.h>`'s `LONG_MIN`/`LONG_MAX`/`ULONG_MAX` and
+    `<stdint.h>`'s `intptr_t`/`uintptr_t` are, unavoidably, the one place
+    a header's own content depends on which backend it ends up compiled
+    for: plain `long` (and a pointer) is 4 bytes on x86 but 8 on the JVM
+    backend (see below), so those are written as expressions the
+    *compiler* resolves against long's real width on whichever backend
+    it's actually targeting, rather than a `#if`-time literal that would
+    be silently wrong on one of the two -- see `limits.h`'s own comment
+    for the (small) resulting caveat.
+  * **Not C99, kept for compatibility with real code**: `<strings.h>`,
+    `<errno.h>`, `<setjmp.h>`, `<unistd.h>`, `<sys/types.h>`,
+    `<alloca.h>`, `<dlfcn.h>` -- all x86-only (real libc symbols this
+    backend just declares and links against; none are implemented by
+    `StandardRuntime`/`NativeRuntime`, so none work on the JVM backend
+    without hand-writing them there first -- see the JVM backend section
+    below).
+
+Still not provided: `<inttypes.h>`, `<time.h>`, `<signal.h>`,
+`<locale.h>`, `<wchar.h>`/`<wctype.h>`, `<complex.h>`/`<tgmath.h>` -- none
+of these need the preprocessor or parser to change to add, just more
+declarations (and, for anything not already in `StandardRuntime.java`,
+a real implementation there for the JVM backend to actually call).
 
 ## JVM backend (`-arch=jvm`)
 
@@ -413,7 +469,7 @@ C-style address space:
     and calling it both work, for `int`/`long`/pointer and `float`/`double`
     (promoted to `double`, per C's own default argument promotion)
     arguments, using cflat's existing `va_list`/`va_init()`/`va_next()`
-    (`import stdarg`, see `lib/stdarg.cb`) -- unchanged from the x86
+    (`#include "stdarg.h"`, see `lib/stdarg.cb`) -- unchanged from the x86
     backend's own implementation of those three, despite the JVM having
     no equivalent of a real, contiguous call stack to point into: a call
     to a vararg function marshals its "..." arguments into a small,
@@ -451,9 +507,10 @@ to the `.class` file, and compiles with `javac` right after generating it
 `NativeRuntime` in turn `extends`
 `net.loveruby.cflat.sysdep.jvm.runtime.StandardRuntime`, hand-written and
 checked into cbc itself. Because of that chain, a call to a function
-declared (e.g. via `import`) but not defined in the same file -- anything
-other than `putchar`/`puts`/`printf`, which the compiler already knows
-about directly -- is simply a call to an *inherited* method:
+declared (e.g. via `#include`) but not defined in the same file --
+anything other than `putchar`/`puts`/`printf`, which the compiler
+already knows about directly -- is simply a call to an *inherited*
+method:
 
   * **`StandardRuntime`** already implements a useful chunk of libc:
     `<ctype.h>` (`isdigit`, `isalpha`, `isalnum`, `isspace`, `isupper`,

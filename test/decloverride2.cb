@@ -1,5 +1,5 @@
-import stdio;
-import decloverride2;
+#include "stdio.h"
+#include "decloverride2.h"
 
 int f(void) { return 77; }
 

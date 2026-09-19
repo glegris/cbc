@@ -63,15 +63,16 @@ report() {
     fi
 }
 
-# Compiles NAME.cb in its own scratch subdirectory (so a stray .hb sibling
-# in test/, e.g. decloverride.hb, still resolves via the default "."
-# search path) and echoes the resulting class name on success.
+# Compiles NAME.cb in its own scratch subdirectory (so a stray .h sibling
+# in test/, e.g. decloverride.h, still resolves via a quoted #include's
+# own "look next to the including file first" rule) and echoes the
+# resulting class name on success.
 compile_case() {
     local name="$1" work="$SCRATCH/$1"
     mkdir -p "$work"
     cp "$DIR/$name.cb" "$work/"
-    if [ -f "$DIR/$name.hb" ]; then
-        cp "$DIR/$name.hb" "$work/"
+    if [ -f "$DIR/$name.h" ]; then
+        cp "$DIR/$name.h" "$work/"
     fi
     ( cd "$work" && "$CBC" -arch=jvm -I "$IMPORT" -I "$DIR" "$name.cb" ) \
         >"$work/compile.out" 2>"$work/compile.err"
@@ -229,6 +230,11 @@ run_case funcptr        "OK;OK;OK;OK"
 # --- preprocessor: variadic macros (incl. GNU ", ##__VA_ARGS__" comma
 # elision), predefined macros, and #line's effect on __LINE__ ---
 run_case preprocessor   "42;noargs;witharg:7;1;0;1;1000"
+
+# stdio.h and string.h both "#include \"stddef.h\"" -- this passing
+# (rather than a duplicate NULL/size_t/ptrdiff_t definition error) is
+# what actually exercises stddef.h's own include guard.
+run_case duplicated-import "OK"
 
 echo
 echo "pass=$pass known-diff=$known fail=$fail"

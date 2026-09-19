@@ -1,5 +1,5 @@
-import stdio;
-import stdarg;
+#include "stdio.h"
+#include "stdarg.h"
 
 static int
 sumints(int n, ...)

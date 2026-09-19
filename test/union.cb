@@ -1,4 +1,4 @@
-import stdio;
+#include "stdio.h"
 
 union nums {
     unsigned char[8] cs;

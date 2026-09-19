@@ -1,5 +1,5 @@
-import stdio;
-import string;
+#include "stdio.h"
+#include "string.h"
 
 int global_x = 0;
 int common_x;

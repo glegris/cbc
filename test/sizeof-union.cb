@@ -1,4 +1,4 @@
-import stdio;
+#include "stdio.h"
 
 union u1 {
     char x;

@@ -81,25 +81,23 @@ public interface ParserConstants {
   /** RegularExpression Id. */
   int TYPEDEF = 37;
   /** RegularExpression Id. */
-  int IMPORT = 38;
+  int SIZEOF = 38;
   /** RegularExpression Id. */
-  int SIZEOF = 39;
+  int IDENTIFIER = 39;
   /** RegularExpression Id. */
-  int IDENTIFIER = 40;
+  int INTEGER = 40;
   /** RegularExpression Id. */
-  int INTEGER = 41;
+  int INTSUFFIX = 41;
   /** RegularExpression Id. */
-  int INTSUFFIX = 42;
+  int FLOATLIT = 42;
   /** RegularExpression Id. */
-  int FLOATLIT = 43;
+  int EXPONENT = 43;
   /** RegularExpression Id. */
-  int EXPONENT = 44;
+  int HEXEXPONENT = 44;
   /** RegularExpression Id. */
-  int HEXEXPONENT = 45;
+  int CHARACTER = 49;
   /** RegularExpression Id. */
-  int CHARACTER = 50;
-  /** RegularExpression Id. */
-  int STRING = 55;
+  int STRING = 54;
 
   /** Lexical state. */
   int DEFAULT = 0;
@@ -152,7 +150,6 @@ public interface ParserConstants {
     "\"continue\"",
     "\"goto\"",
     "\"typedef\"",
-    "\"import\"",
     "\"sizeof\"",
     "<IDENTIFIER>",
     "<INTEGER>",
@@ -161,22 +158,22 @@ public interface ParserConstants {
     "<EXPONENT>",
     "<HEXEXPONENT>",
     "\"\\\'\"",
+    "<token of kind 46>",
     "<token of kind 47>",
     "<token of kind 48>",
-    "<token of kind 49>",
     "\"\\\'\"",
     "\"\\\"\"",
+    "<token of kind 51>",
     "<token of kind 52>",
     "<token of kind 53>",
-    "<token of kind 54>",
     "\"\\\"\"",
     "\"(\"",
-    "\".\"",
-    "\";\"",
     "\"=\"",
+    "\";\"",
     "\",\"",
     "\"{\"",
     "\"}\"",
+    "\".\"",
     "\"[\"",
     "\"]\"",
     "\")\"",

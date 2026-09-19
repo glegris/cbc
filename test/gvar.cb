@@ -1,4 +1,4 @@
-import stdio;
+#include "stdio.h"
 
 int global_int = 1;
 char *global_string = "OK";

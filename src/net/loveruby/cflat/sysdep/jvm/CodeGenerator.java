@@ -137,7 +137,7 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             "strlen", "strcpy", "strncpy", "strcat", "strncat", "strcmp",
             "strncmp", "strchr", "memcpy", "memmove", "memset", "memcmp",
             // <stdlib.h>
-            "abs", "labs", "atoi", "atol", "atof",
+            "exit", "abs", "labs", "atoi", "atol", "atof",
             // <stdarg.h> -- va_init() is a separate compile-time
             // intrinsic (see compileVaInit), not listed here.
             "va_next"
@@ -2100,7 +2100,7 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         private boolean callIsVoid(Call call) {
             if (call.isStaticCall()) {
                 // putchar/puts/printf are all declared to return int in
-                // stdio.hb, so the generic isVoid() check below already
+                // stdio.h, so the generic isVoid() check below already
                 // says "not void" for them; compilePutchar/compilePuts/
                 // compilePrintf always leave a (possibly dummy) int on
                 // the stack to match.

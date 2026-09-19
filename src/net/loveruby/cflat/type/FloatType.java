@@ -25,7 +25,8 @@ public class FloatType extends Type {
     }
 
     public boolean isCastableTo(Type target) {
-        return target.isInteger() || target.isFloat();
+        // See IntegerType#isCastableTo's own comment on "(void)expr;".
+        return target.isInteger() || target.isFloat() || target.isVoid();
     }
 
     public long size() {

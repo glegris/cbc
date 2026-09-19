@@ -1,10 +1,11 @@
-// #@@range/head{
-// stdio.hb
+/* <stdio.h> -- C99 7.19 */
+#ifndef _CFLAT_STDIO_H
+#define _CFLAT_STDIO_H
 
-import stddef;  // for NULL and size_t
-import stdarg;
+#include "stddef.h"  /* for NULL and size_t */
+#include "stdarg.h"
 
-typedef unsigned long FILE;   // dummy
+typedef unsigned long FILE;   /* dummy */
 
 extern FILE* stdin;
 extern FILE* stdout;
@@ -14,7 +15,6 @@ extern FILE* fopen(char* path, char* mode);
 extern FILE* fdopen(int fd, char* mode);
 extern FILE* freopen(char* path, char* mode, FILE* stream);
 extern int fclose(FILE* stream);
-// #@@}
 extern int getchar(void);
 extern int getc(FILE* stream);
 extern int fgetc(FILE* stream);
@@ -41,3 +41,5 @@ extern int vprintf(char* fmt, va_list ap);
 extern int vfprintf(FILE* s, char* fmt, va_list ap);
 extern int vsprintf(char *buf, char* fmt, va_list ap);
 extern int vsnprintf(char *buf, size_t size, char* fmt, va_list ap);
+
+#endif

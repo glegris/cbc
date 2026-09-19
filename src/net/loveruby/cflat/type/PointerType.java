@@ -44,7 +44,8 @@ public class PointerType extends Type {
     }
 
     public boolean isCastableTo(Type other) {
-        return other.isPointer() || other.isInteger();
+        // See IntegerType#isCastableTo's own comment on "(void)expr;".
+        return other.isPointer() || other.isInteger() || other.isVoid();
     }
 
     public String toString() {

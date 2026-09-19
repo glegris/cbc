@@ -1,6 +1,8 @@
-// string.hb
+/* <string.h> -- C99 7.21 */
+#ifndef _CFLAT_STRING_H
+#define _CFLAT_STRING_H
 
-import stddef;  // for size_t
+#include "stddef.h"  /* for size_t */
 
 extern char* strcat(char* dest, char* src);
 extern char* strncat(char* dest, char* src, size_t len);
@@ -20,3 +22,7 @@ extern char* strerror_r(int errnum, char* buf, size_t len);
 extern void* memcpy(void* dest, void* src, size_t len);
 extern void* memccpy(void* dest, void* src, int c, size_t len);
 extern void* memmove(void* dest, void* src, size_t len);
+extern void* memset(void* dest, int c, size_t len);
+extern int memcmp(void* a, void* b, size_t len);
+
+#endif

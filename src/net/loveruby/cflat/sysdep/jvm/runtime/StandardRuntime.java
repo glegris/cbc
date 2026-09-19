@@ -247,9 +247,13 @@ public class StandardRuntime {
     }
 
     //
-    // <stdlib.h> -- numeric conversions/abs, the parts that don't need a
-    // heap allocator.
+    // <stdlib.h> -- numeric conversions/abs/exit, the parts that don't
+    // need a heap allocator.
     //
+
+    public void exit(int status) {
+        System.exit(status);
+    }
 
     public int abs(int x) {
         return Math.abs(x);

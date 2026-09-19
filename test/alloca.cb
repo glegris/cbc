@@ -1,6 +1,6 @@
-import stdio;
-import string;
-import alloca;
+#include "stdio.h"
+#include "string.h"
+#include "alloca.h"
 
 int
 main(void)

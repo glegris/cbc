@@ -8,9 +8,9 @@
 comment in
   multiple lines */
 
-import stdio;
-import stdlib;
-import unistd;
+#include "stdio.h"
+#include "stdlib.h"
+#include "unistd.h"
 
 char c;
 short s;

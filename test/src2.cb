@@ -1,2 +1,2 @@
-import src1;
+#include "src1.h"
 int main(int argc, char **argv) { return f(2); }

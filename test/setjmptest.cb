@@ -1,5 +1,5 @@
-import stdio;
-import setjmp;
+#include "stdio.h"
+#include "setjmp.h"
 
 int
 main(void)
