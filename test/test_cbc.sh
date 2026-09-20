@@ -46,6 +46,8 @@ test_06_variables() {
     assert_out "1;1" ./null-pointer-return
     assert_out "o;3;3;o world;world;3;1;copy me;dup me;trun;a.b.c.;1;3" ./string-funcs
     assert_out "1;0;1;0;0;1;1;0;1;0;1;1" ./ctype-funcs
+    assert_out "132767" ./narrowing-cast-return
+    assert_out "3;1;3;2;-123;abc;255;314;xyz;1;1;1;2;3;4;5;1;4" ./stdlib-funcs
     assert_out "16;16;16;msgstring" ./const
     assert_compile_error var-semcheck.c
 

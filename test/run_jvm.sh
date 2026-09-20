@@ -233,6 +233,8 @@ run_case malloc "0;1;4;9;16;0;0;0;10;20;30;40;4950"
 run_case null-pointer-return "1;1"
 run_case string-funcs "o;3;3;o world;world;3;1;copy me;dup me;trun;a.b.c.;1;3"
 run_case ctype-funcs "1;0;1;0;0;1;1;0;1;0;1;1"
+run_case narrowing-cast-return "132767"
+run_case stdlib-funcs "3;1;3;2;-123;abc;255;314;xyz;1;1;1;2;3;4;5;1;4"
 
 # --- preprocessor: variadic macros (incl. GNU ", ##__VA_ARGS__" comma
 # elision), predefined macros, and #line's effect on __LINE__ ---

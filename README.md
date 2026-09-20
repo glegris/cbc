@@ -494,7 +494,12 @@ C-style address space:
     codegen at all (no FPU/SSE instructions are ever emitted) and
     rejects any use of `float`/`double` at code generation time instead
     of miscompiling it. There is no `long double` (a plain or
-    `L`-suffixed floating constant is just a `double`).
+    `L`-suffixed floating constant is just a `double`). **Not
+    supported**: compound assignment (`+= -= *= /=`) on a `float`/
+    `double` operand -- `OpAssignNode`'s own type check unconditionally
+    requires an integer on both sides (pointer `+=`/`-=` is the one
+    existing exception); write `x = x + y;` instead of `x += y;` until
+    this is lifted.
   * **variadic functions**: defining one (`int myprintf(char *fmt, ...)`)
     and calling it both work, for `int`/`long`/pointer and `float`/`double`
     (promoted to `double`, per C's own default argument promotion)
@@ -542,23 +547,43 @@ anything other than `putchar`/`puts`/`printf`, which the compiler
 already knows about directly -- is simply a call to an *inherited*
 method:
 
-  * **`StandardRuntime`** already implements a useful chunk of libc:
-    `<ctype.h>` (`isdigit`, `isalpha`, `isalnum`, `isspace`, `isupper`,
-    `islower`, `toupper`, `tolower`), `<string.h>` (`strlen`, `strcpy`,
-    `strncpy`, `strcat`, `strncat`, `strcmp`, `strncmp`, `strchr`,
-    `memcpy`, `memmove`, `memset`, `memcmp`), and `<stdlib.h>`'s numeric
-    conversions (`abs`, `labs`, `atoi`, `atol`, `atof`) -- all operating
-    on memory the caller already owns, since this backend has no
-    general-purpose `malloc`/`free` exposed to cflat code yet. Add a
-    `public` instance method there to make another function available to
-    every compiled program without regenerating anything: its
-    parameters/return type are the cflat ones, mapped the way
-    `CodeGenerator#buildDescriptor` always maps them
-    (`int`/`long`/`float`/`double`); an implementation that needs to
+  * **`StandardRuntime`** already implements a useful chunk of libc: a
+    real first-fit free-list `malloc`/`calloc`/`realloc`/`free` (carved
+    out of the same simulated address space everything else uses -- see
+    below), the eight `<ctype.h>` functions that were there before
+    `<string.h>`/`<stdlib.h>` gained real portable-C bodies of their own
+    (`isdigit`, `isalpha`, `isalnum`, `isspace`, `isupper`, `islower`,
+    `toupper`, `tolower`), the `<string.h>` functions in the same
+    position (`strlen`, `strcpy`, `strncpy`, `strcat`, `strncat`,
+    `strcmp`, `strncmp`, `strchr`, `memcpy`, `memmove`, `memset`,
+    `memcmp`), and `<stdlib.h>`'s numeric conversions (`abs`, `labs`,
+    `atoi`, `atol`, `atof`). Add a `public` instance method there to make
+    another function available to every compiled program without
+    regenerating anything: its parameters/return type are the cflat
+    ones, mapped the way `CodeGenerator#buildDescriptor` always maps
+    them (`int`/`long`/`float`/`double`); an implementation that needs to
     read/write memory directly uses the inherited `mem` field (this
     program's whole simulated address space -- a cflat pointer is a
     plain `long` byte offset into it, cast with `(int)` to index it),
     and one that doesn't simply never mentions it.
+  * The rest of `<ctype.h>`/`<string.h>`/`<stdlib.h>` (`iscntrl` and
+    friends; `memchr`, `strdup`, `strtok`, `strstr`, ... ; `div`/`ldiv`,
+    `strtol`/`strtoul`/`strtod`, `rand`/`srand`, `qsort`/`bsearch`, ...)
+    needs no host access at all, so it's written directly as portable
+    `static` C in the header itself instead (see `<assert.h>`'s own doc
+    comment for why `static`) -- this backend has no way to link two
+    separately-compiled translation units together at all (see "JVM
+    backend" below), so a real function *body* living in a header,
+    spliced into whichever `.c` file `#include`s it, is the only way to
+    give a function like this a real implementation shared by every
+    program, on top of a real libc's own headers-are-declarations-only
+    norm. This runs identically on both backends, with no JVM-specific
+    implementation to keep in sync -- except for `long long`-based
+    functions (`llabs`, `atoll`, `strtoll`, `strtoull`), left
+    undeclared entirely: the x86 backend rejects `long long` outright
+    (see above), so a real body using it here -- included everywhere,
+    unconditionally -- would break every x86 build that includes the
+    header, not just a program that actually calls one of them.
   * **`NativeRuntime`** is generated fresh per program and contains one
     stub -- throwing `NotImplementedException` -- for each external
     function the program calls that isn't already in `StandardRuntime`

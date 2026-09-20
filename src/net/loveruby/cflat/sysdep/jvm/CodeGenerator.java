@@ -1714,7 +1714,25 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                 }
                 else {
                     compile(node.expr());
-                    mv.visitVarInsn(storeOpcode(resultWidth(node.expr())), returnValueSlot);
+                    // Coerce to the function's own declared return width
+                    // rather than trusting resultWidth(node.expr()) as
+                    // already matching it: it doesn't always. E.g. a
+                    // narrowing CastNode ("(int)(some_long_expr)") is
+                    // "not effective" per CastNode#isEffectiveCast() (its
+                    // x86-oriented, size-only heuristic treats narrowing
+                    // as a free reinterpretation, true for a register but
+                    // not for the JVM's distinct long-vs-int *slot
+                    // counts*), so IRGenerator's visit(CastNode) drops it
+                    // and hands back the wider, uncast inner expression
+                    // as-is -- without this, "int f(void) { return
+                    // (int)long_expr; }" would try to ISTORE a two-slot
+                    // long value into the one-slot returnValueSlot an
+                    // int-returning function actually uses, corrupting
+                    // the JVM's local variable table (a VerifyError at
+                    // class load, not just a wrong value).
+                    net.loveruby.cflat.asm.Type wanted = asmWidthOf(func.returnType());
+                    coerceWidth(resultWidth(node.expr()), wanted);
+                    mv.visitVarInsn(storeOpcode(wanted), returnValueSlot);
                 }
             }
             mv.visitJumpInsn(GOTO, epilogueLabel);
