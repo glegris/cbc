@@ -791,10 +791,37 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
 
     public Expr visit(VariableNode node) {
         if (node.entity().isConstant()) {
-            return transformExpr(node.entity().value());
+            return coerceConstantWidth(transformExpr(node.entity().value()), asmType(node.type()));
         }
         Var var = ref(node.entity());
         return node.isLoadable() ? var : addressOf(var);
+    }
+
+    /** A named "const TYPE X = ...;" (or an enumerator)'s value is
+     *  substituted as-is above, keeping the literal's OWN width -- e.g.
+     *  stddef.h's "const void* NULL = 0;" substitutes the plain int
+     *  literal "0" (4 bytes), not a pointer-width (8-byte on this
+     *  backend) value. That's usually harmless (int and long both end up
+     *  as ordinary JVM ints/longs the caller coerces as needed), but not
+     *  always: unlike an ordinary mismatched-type expression, nothing
+     *  ever inserts a widening CastNode at a Constant reference's own
+     *  call site for TypeChecker to have produced -- node.type() (the
+     *  reference's own resolved type, e.g. "void*" for a NULL used to
+     *  initialize/return/compare a pointer) can already look identical
+     *  to the constant's declared type without one, so this is the only
+     *  place left to fix the width. Skipping it silently produced wrong
+     *  bytecode before this existed: e.g. "void* f(void) { return NULL; }"
+     *  stored a single-slot JVM int into the two-slot long return slot a
+     *  pointer-returning function actually uses, corrupting the JVM's
+     *  local variable table (a VerifyError, not just a wrong value). */
+    private Expr coerceConstantWidth(Expr value, net.loveruby.cflat.asm.Type target) {
+        if (value instanceof Int && value.type() != target) {
+            return new Int(target, ((Int) value).value());
+        }
+        if (value instanceof Flo && value.type() != target) {
+            return new Flo(target, ((Flo) value).value());
+        }
+        return value;
     }
 
     public Expr visit(IntegerLiteralNode node) {
