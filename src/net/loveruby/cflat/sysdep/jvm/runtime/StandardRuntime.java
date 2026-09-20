@@ -1,8 +1,11 @@
 package net.loveruby.cflat.sysdep.jvm.runtime;
 
+import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.TreeMap;
 
@@ -440,6 +443,181 @@ public class StandardRuntime {
         catch (NumberFormatException ex) {
             return 0.0;
         }
+    }
+
+    //
+    // File I/O primitives backing <stdio.h>'s FILE*-taking functions
+    // (see that header for FILE's own definition -- a plain fd wrapper
+    // here, this backend's translation of the real OS-level concept).
+    // fd 0/1/2 are reserved for stdin/stdout/stderr, going through the
+    // JVM's own System.in/out/err (the same streams putchar/puts/printf
+    // already use above, not a separate RandomAccessFile) -- everything
+    // mir_sysio_open() successfully opens gets a real one instead, keyed
+    // by an incrementing fd starting at 3.
+    //
+
+    private final Map<Integer, RandomAccessFile> fdTable = new HashMap<Integer, RandomAccessFile>();
+    private final Map<Integer, Boolean> fdEof = new HashMap<Integer, Boolean>();
+    private int nextFd = 3;
+
+    private String readCString(long addr) {
+        StringBuilder sb = new StringBuilder();
+        int i = at(addr);
+        while (mem[i] != 0) {
+            sb.append((char) (mem[i] & 0xFF));
+            i++;
+        }
+        return sb.toString();
+    }
+
+    /** Opens "mode" ("r"/"w"/"a", each optionally with "+"/"b") the same
+     *  way fopen() promises to, returning a new fd (>= 3) on success or
+     *  -1 on failure -- there's no errno to report a real cause through
+     *  (see <errno.h>'s own doc comment), so every failure just looks
+     *  like ENOENT to the caller. */
+    public int mir_sysio_open(long pathAddr, long modeAddr) {
+        String path = readCString(pathAddr);
+        String mode = readCString(modeAddr);
+        try {
+            String rafMode = "r";
+            boolean append = false;
+            if (mode.indexOf('w') >= 0 || mode.indexOf('+') >= 0) {
+                rafMode = "rw";
+            }
+            if (mode.indexOf('a') >= 0) {
+                rafMode = "rw";
+                append = true;
+            }
+            RandomAccessFile raf = new RandomAccessFile(path, rafMode);
+            if (mode.indexOf('w') >= 0) {
+                raf.setLength(0L);
+            }
+            raf.seek(append ? raf.length() : 0L);
+            int fd = nextFd++;
+            fdTable.put(fd, raf);
+            fdEof.put(fd, Boolean.FALSE);
+            return fd;
+        }
+        catch (IOException e) {
+            return -1;
+        }
+    }
+
+    public int mir_sysio_close(int fd) {
+        if (fd == 0 || fd == 1 || fd == 2) {
+            return 0;  // never really closed, same as real libc's std streams
+        }
+        RandomAccessFile raf = fdTable.remove(fd);
+        fdEof.remove(fd);
+        if (raf == null) {
+            return -1;
+        }
+        try {
+            raf.close();
+            return 0;
+        }
+        catch (IOException e) {
+            return -1;
+        }
+    }
+
+    public long mir_sysio_read(int fd, long bufAddr, long count) {
+        if (count <= 0) {
+            return 0;
+        }
+        if (fd == 1 || fd == 2) {
+            return -1;  // stdout/stderr aren't readable
+        }
+        byte[] tmp = new byte[(int) count];
+        try {
+            int got;
+            if (fd == 0) {
+                got = System.in.read(tmp);
+            }
+            else {
+                RandomAccessFile raf = fdTable.get(fd);
+                if (raf == null) return -1;
+                got = raf.read(tmp);
+            }
+            if (got <= 0) {
+                fdEof.put(fd, Boolean.TRUE);
+                return 0;
+            }
+            System.arraycopy(tmp, 0, mem, at(bufAddr), got);
+            return got;
+        }
+        catch (IOException e) {
+            return -1;
+        }
+    }
+
+    public long mir_sysio_write(int fd, long bufAddr, long count) {
+        if (count <= 0) {
+            return 0;
+        }
+        byte[] tmp = new byte[(int) count];
+        System.arraycopy(mem, at(bufAddr), tmp, 0, (int) count);
+        try {
+            if (fd == 1) {
+                System.out.write(tmp);
+                System.out.flush();
+                return count;
+            }
+            if (fd == 2) {
+                System.err.write(tmp);
+                System.err.flush();
+                return count;
+            }
+            if (fd == 0) {
+                return -1;  // stdin isn't writable
+            }
+            RandomAccessFile raf = fdTable.get(fd);
+            if (raf == null) return -1;
+            raf.write(tmp);
+            return count;
+        }
+        catch (IOException e) {
+            return -1;
+        }
+    }
+
+    public long mir_sysio_seek(int fd, long offset, int whence) {
+        RandomAccessFile raf = fdTable.get(fd);
+        if (raf == null) {
+            return -1;
+        }
+        try {
+            long base;
+            if (whence == 0) base = 0L;
+            else if (whence == 1) base = raf.getFilePointer();
+            else if (whence == 2) base = raf.length();
+            else return -1;
+            long pos = base + offset;
+            if (pos < 0) pos = 0;
+            raf.seek(pos);
+            fdEof.put(fd, Boolean.FALSE);
+            return raf.getFilePointer();
+        }
+        catch (IOException e) {
+            return -1;
+        }
+    }
+
+    public long mir_sysio_tell(int fd) {
+        RandomAccessFile raf = fdTable.get(fd);
+        if (raf == null) {
+            return -1;
+        }
+        try {
+            return raf.getFilePointer();
+        }
+        catch (IOException e) {
+            return -1;
+        }
+    }
+
+    public int mir_sysio_feof(int fd) {
+        return Boolean.TRUE.equals(fdEof.get(fd)) ? 1 : 0;
     }
 
     //

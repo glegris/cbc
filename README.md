@@ -543,9 +543,10 @@ to the `.class` file, and compiles with `javac` right after generating it
 `net.loveruby.cflat.sysdep.jvm.runtime.StandardRuntime`, hand-written and
 checked into cbc itself. Because of that chain, a call to a function
 declared (e.g. via `#include`) but not defined in the same file --
-anything other than `putchar`/`puts`/`printf`, which the compiler
-already knows about directly -- is simply a call to an *inherited*
-method:
+anything other than `printf` (still a genuine compile-time intrinsic;
+`putchar`/`puts` no longer are, now that `<stdio.h>` gives them a real
+definition of their own -- see below), which the compiler already
+knows about directly -- is simply a call to an *inherited* method:
 
   * **`StandardRuntime`** already implements a useful chunk of libc: a
     real first-fit free-list `malloc`/`calloc`/`realloc`/`free` (carved
@@ -584,6 +585,26 @@ method:
     (see above), so a real body using it here -- included everywhere,
     unconditionally -- would break every x86 build that includes the
     header, not just a program that actually calls one of them.
+  * **`<stdio.h>` file I/O** (`fopen`/`fclose`/`fread`/`fwrite`/`fgets`/
+    `fputc`/`fgetc`/`getchar`/`putchar`/`puts`/`feof`/`ftell`/`fseek`/
+    `fflush`/`ferror`/`clearerr`/`fileno`/`perror`/`ungetc`/`gets`, and
+    `stdin`/`stdout`/`stderr` themselves) is a real `FILE` struct
+    wrapping an fd, and portable-C wrappers around seven new
+    `StandardRuntime` primitives (`mir_sysio_open`/`_close`/`_read`/
+    `_write`/`_seek`/`_tell`/`_feof`), each backed by a real
+    `java.io.RandomAccessFile` (fd 0/1/2 go through `System.in`/`out`/
+    `err` instead, the same streams `printf` already uses). `printf`
+    itself is still the one remaining compile-time intrinsic (a literal
+    format string, as before); `fprintf`/`sprintf`/`snprintf` and their
+    `v...()` counterparts are declared but not implemented on this
+    backend at all yet -- there's no portable-C way to write a real
+    format-string parser/dispatcher in cflat itself the way the rest of
+    this header is, since `"..."` can only be walked with `va_arg_t`'s
+    own fixed-width slots (see `<stdarg.h>`), never type-directed by a
+    runtime-inspected format string the way a real `vsnprintf()` needs
+    to be; calling one of those five throws `NotImplementedException` at
+    runtime on this backend (they work as normal, linked against the
+    real libc, on x86).
   * **`NativeRuntime`** is generated fresh per program and contains one
     stub -- throwing `NotImplementedException` -- for each external
     function the program calls that isn't already in `StandardRuntime`

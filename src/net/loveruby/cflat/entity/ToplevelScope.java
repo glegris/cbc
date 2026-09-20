@@ -119,7 +119,16 @@ public class ToplevelScope extends Scope {
             if (ent.isDefined()
                     && ent.isPrivate()
                     && !ent.isConstant()
-                    && !ent.isRefered()) {
+                    && !ent.isRefered()
+                    && !(ent instanceof Function)) {
+                // A "static" (private) *function*, unlike a variable,
+                // is routinely defined for other code in the same
+                // "#include"d header to call rather than the including
+                // file itself (see e.g. <string.h>'s strtok() calling
+                // strspn()/strcspn()) -- one file using only part of a
+                // shared header's functions is normal, not a sign of
+                // dead code the way an unused local/global variable
+                // usually is, so this doesn't warn about those at all.
                 h.warn(ent.location(), "unused variable: " + ent.name());
             }
         }

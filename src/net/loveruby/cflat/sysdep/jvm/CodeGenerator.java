@@ -144,7 +144,16 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             "malloc", "calloc", "realloc", "free",
             // <stdarg.h> -- va_init() is a separate compile-time
             // intrinsic (see compileVaInit), not listed here.
-            "va_next"
+            "va_next",
+            // <stdio.h> file I/O primitives (see StandardRuntime's own
+            // doc comment on them) -- mir_sysio_* rather than the real
+            // POSIX names, so they can't collide with (or accidentally
+            // be called directly instead of through <stdio.h>'s own
+            // FILE*-taking wrappers by) a real x86 program's own libc
+            // calls of the same underlying operation.
+            "mir_sysio_open", "mir_sysio_close", "mir_sysio_read",
+            "mir_sysio_write", "mir_sysio_seek", "mir_sysio_tell",
+            "mir_sysio_feof"
     ));
 
     private final ErrorHandler errorHandler;
