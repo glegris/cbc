@@ -76,9 +76,9 @@ public class StandardRuntime {
     }
 
     //
-    // putchar/puts/printf's own building blocks -- called directly by
-    // CodeGenerator (see compilePutchar/compilePuts/emitPrint*), not
-    // through the generic extern-call mechanism.
+    // putchar/puts's own building blocks -- called directly by
+    // CodeGenerator (see compilePutchar/compilePuts), not through the
+    // generic extern-call mechanism.
     //
 
     public int putchar(int c) {
@@ -93,15 +93,6 @@ public class StandardRuntime {
         // (0) for whatever, rare, code actually looks at the result.
         return 0;
     }
-
-    public void printLiteral(String s) { System.out.print(s); }
-    public void printInt(int v) { System.out.print(v); }
-    public void printUnsignedInt(int v) { System.out.print(Integer.toUnsignedString(v)); }
-    public void printLong(long v) { System.out.print(v); }
-    public void printUnsignedLong(long v) { System.out.print(Long.toUnsignedString(v)); }
-    public void printChar(char c) { System.out.print(c); }
-    public void printString(String s) { System.out.print(s); }
-    public void printDouble(double d) { System.out.print(d); }
 
     //
     // <ctype.h> -- pure functions, "mem" unused.

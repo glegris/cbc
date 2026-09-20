@@ -124,8 +124,7 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
     // constructed instance of the compiled class itself (built once in
     // emitClinit, over $mem), since every call site that needs to invoke
     // an inherited method is a *static* cflat function with no "this" of
-    // its own -- see compilePutchar/compilePuts/emitPrint*/
-    // compileNativeCall.
+    // its own -- see compilePutchar/compilePuts/compileNativeCall.
     private static final String NATIVE_RUNTIME_CLASS = "NativeRuntime";
     private static final String STANDARD_RUNTIME_CLASS =
             "net/loveruby/cflat/sysdep/jvm/runtime/StandardRuntime";
@@ -414,11 +413,11 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         mv.visitCode();
 
         // The one shared instance of this very class -- extending
-        // NativeRuntime/StandardRuntime -- that every putchar/puts/
-        // printf and extensible-native-call goes through (see
-        // compilePutchar/compilePuts/emitPrint*/compileNativeCall),
-        // since those are static cflat functions with no "this" of
-        // their own to call an inherited method on. Constructing it is
+        // NativeRuntime/StandardRuntime -- that every putchar/puts and
+        // extensible-native-call goes through (see
+        // compilePutchar/compilePuts/compileNativeCall), since those are
+        // static cflat functions with no "this" of their own to call an
+        // inherited method on. Constructing it is
         // also what allocates the simulated address space:
         // StandardRuntime's own constructor does `new byte[HEAP_SIZE]`,
         // so $mem below is just read back off the new instance, not
@@ -2164,11 +2163,11 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
 
         private boolean callIsVoid(Call call) {
             if (call.isStaticCall()) {
-                // putchar/puts/printf are all declared to return int in
+                // putchar/puts are both declared to return int in
                 // stdio.h, so the generic isVoid() check below already
-                // says "not void" for them; compilePutchar/compilePuts/
-                // compilePrintf always leave a (possibly dummy) int on
-                // the stack to match.
+                // says "not void" for them; compilePutchar/compilePuts
+                // always leave a (possibly dummy) int on the stack to
+                // match.
                 return call.function().isVoid();
             }
             net.loveruby.cflat.type.FunctionType ft = indirectCallSignature(call);
@@ -2198,10 +2197,6 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                 }
                 if (name.equals("puts") && node.args().size() == 1) {
                     compilePuts(node);
-                    return;
-                }
-                if (name.equals("printf") && !node.args().isEmpty()) {
-                    compilePrintf(node);
                     return;
                 }
                 if (name.equals("va_init") && node.args().size() == 1) {
@@ -2262,15 +2257,15 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
          *  freshly allocated block of consecutive 8-byte slots in $mem --
          *  one slot per argument, raw long bits for integers/pointers,
          *  the same-width raw double bits (per C's own default argument
-         *  promotion: a float vararg always arrives as a double, see
-         *  emitPrintFloat's identical reasoning) for floating-point --
-         *  then pushes that block's base address as the hidden trailing
-         *  parameter buildDescriptor() gives every vararg function (or a
-         *  bare 0 if this call happens to pass none, e.g. "f(x)" for
-         *  "f(int x, ...)"). va_next() (see StandardRuntime) reads them
-         *  back in the same order with plain pointer arithmetic, exactly
-         *  like x86's own stack-based layout, just relocated to a block
-         *  this backend controls instead of a real call stack.
+         *  promotion: a float vararg always arrives as a double) for
+         *  floating-point -- then pushes that block's base address as
+         *  the hidden trailing parameter buildDescriptor() gives every
+         *  vararg function (or a bare 0 if this call happens to pass
+         *  none, e.g. "f(x)" for "f(int x, ...)"). va_next() (see
+         *  StandardRuntime) reads them back in the same order with plain
+         *  pointer arithmetic, exactly like x86's own stack-based
+         *  layout, just relocated to a block this backend controls
+         *  instead of a real call stack.
          *
          *  Each argument's own value may itself be an arbitrary
          *  expression -- including another (nested) vararg call -- so
@@ -2476,140 +2471,6 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             compileCString(node.args().get(0));
             mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_RUNTIME_CLASS,
                     "puts", "(Ljava/lang/String;)I", false);
-        }
-
-        private void compilePrintf(Call node) {
-            List<Expr> args = node.args();
-            Expr fmtExpr = args.get(0);
-            if (!(fmtExpr instanceof Str)) {
-                error("printf() is only supported with a string literal format "
-                        + "by the JVM backend");
-                mv.visitInsn(ICONST_0);
-                return;
-            }
-            String fmt = ((Str) fmtExpr).entry().value();
-            int argIndex = 1;
-            StringBuilder literal = new StringBuilder();
-            int i = 0;
-            while (i < fmt.length()) {
-                char c = fmt.charAt(i);
-                if (c != '%') {
-                    literal.append(c);
-                    i++;
-                    continue;
-                }
-                int j = i + 1;
-                while (j < fmt.length() && (fmt.charAt(j) == 'l' || fmt.charAt(j) == 'h')) {
-                    j++;
-                }
-                if (j >= fmt.length()) {
-                    literal.append(c);
-                    i++;
-                    continue;
-                }
-                char spec = fmt.charAt(j);
-                switch (spec) {
-                case '%':
-                    literal.append('%');
-                    break;
-                case 'd': case 'i': case 'u':
-                    flushLiteral(literal);
-                    argIndex = emitPrintArg(args, argIndex, spec == 'u');
-                    break;
-                case 'c':
-                    flushLiteral(literal);
-                    argIndex = emitPrintChar(args, argIndex);
-                    break;
-                case 's':
-                    flushLiteral(literal);
-                    argIndex = emitPrintString(args, argIndex);
-                    break;
-                case 'f': case 'e': case 'g': case 'E': case 'G':
-                    flushLiteral(literal);
-                    argIndex = emitPrintFloat(args, argIndex);
-                    break;
-                default:
-                    error("unsupported printf format specifier by the JVM backend: %" + spec);
-                    mv.visitInsn(ICONST_0);
-                    return;
-                }
-                i = j + 1;
-            }
-            flushLiteral(literal);
-            mv.visitInsn(ICONST_0);
-        }
-
-        private void flushLiteral(StringBuilder sb) {
-            if (sb.length() > 0) {
-                pushRuntime();
-                mv.visitLdcInsn(sb.toString());
-                mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_RUNTIME_CLASS,
-                        "printLiteral", "(Ljava/lang/String;)V", false);
-                sb.setLength(0);
-            }
-        }
-
-        private int emitPrintArg(List<Expr> args, int idx, boolean unsigned) {
-            if (idx >= args.size()) {
-                error("not enough arguments for printf format");
-                return idx;
-            }
-            pushRuntime();
-            Expr arg = args.get(idx);
-            compile(arg);
-            boolean wide = isWide(resultWidth(arg));
-            String name = unsigned
-                    ? (wide ? "printUnsignedLong" : "printUnsignedInt")
-                    : (wide ? "printLong" : "printInt");
-            mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_RUNTIME_CLASS, name,
-                    wide ? "(J)V" : "(I)V", false);
-            return idx + 1;
-        }
-
-        private int emitPrintChar(List<Expr> args, int idx) {
-            if (idx >= args.size()) {
-                error("not enough arguments for printf format");
-                return idx;
-            }
-            pushRuntime();
-            Expr arg = args.get(idx);
-            compile(arg);
-            coerceToInt(resultWidth(arg));
-            mv.visitInsn(I2C);
-            mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_RUNTIME_CLASS,
-                    "printChar", "(C)V", false);
-            return idx + 1;
-        }
-
-        private int emitPrintString(List<Expr> args, int idx) {
-            if (idx >= args.size()) {
-                error("not enough arguments for printf format");
-                return idx;
-            }
-            pushRuntime();
-            compileCString(args.get(idx));
-            mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_RUNTIME_CLASS,
-                    "printString", "(Ljava/lang/String;)V", false);
-            return idx + 1;
-        }
-
-        /** %f/%e/%g: prints the argument as a double (per C's own default
-         *  argument promotion, a float vararg always arrives as a
-         *  double). Field width and precision specifiers (e.g. "%.2f")
-         *  are not interpreted, same as this backend's existing %d/%s
-         *  handling. */
-        private int emitPrintFloat(List<Expr> args, int idx) {
-            if (idx >= args.size()) {
-                error("not enough arguments for printf format");
-                return idx;
-            }
-            pushRuntime();
-            Expr arg = args.get(idx);
-            compile(arg);
-            coerceWidth(resultWidth(arg), net.loveruby.cflat.asm.Type.FLOAT64);
-            mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_RUNTIME_CLASS,
-                    "printDouble", "(D)V", false);
-            return idx + 1;
         }
 
         public Void visit(Addr node) {
