@@ -33,13 +33,28 @@ public class CastNode extends ExprNode {
         if (type().isFloat() || expr.type().isFloat()) {
             // A conversion to/from a floating type is never a no-op
             // bit-reinterpretation, regardless of the two types'
-            // relative sizes -- unlike a plain integer narrowing/
-            // widening, where same-or-smaller size alone means the
-            // underlying bits already mean the same thing and no real
-            // instruction is needed.
+            // relative sizes.
             return ! type().isSameType(expr.type());
         }
-        return type().size() > expr.type().size();
+        // A cast between two integer types of the SAME size is a true
+        // no-op (signed/unsigned reinterpretation of an identical bit
+        // pattern needs no instruction on either backend). A WIDENING
+        // cast obviously needs one (to sign/zero-extend the extra
+        // bits). A NARROWING cast needs one too, even though it might
+        // look "free" at a glance (the low bits are already right,
+        // same as widening's -- just drop the rest): a narrower value
+        // is stored back into a full-width register/slot with no
+        // separate representation of its own on either backend, so
+        // whatever garbage happened to be sitting in the bits above
+        // the narrower width (e.g. the result of some wider arithmetic
+        // this cast is truncating) stays there unless an actual
+        // instruction masks/re-extends it -- and that garbage is very
+        // much observable by anything that later reads the value at
+        // its ostensibly-still-wide representation (a truthiness test,
+        // a comparison, further arithmetic, ...), not just by a value
+        // that immediately gets stored into an equally-narrow variable
+        // (where the store's own width happens to mask it anyway).
+        return type().size() != expr.type().size();
     }
 
     /** A compiler-synthesized cast (TypeChecker's implicitCast, via the

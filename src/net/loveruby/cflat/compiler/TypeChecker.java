@@ -520,11 +520,27 @@ class TypeChecker extends Visitor {
         Type r = arithPromotion(node.right().type());
         Type l = arithPromotion(node.left().type());
         Type target = usualArithmeticConversion(l, r);
-        if (! l.isSameType(target)) {
+        // Compared against each operand's own ACTUAL type below, not
+        // against "l"/"r" (the PROMOTED type computed just above): a
+        // below-int operand (e.g. "unsigned char") whose promotion
+        // happens to land exactly on "target" (a very common case --
+        // any comparison/arithmetic between a narrow unsigned type and
+        // a plain "int") would otherwise skip inserting a cast
+        // entirely, since "r.isSameType(target)"/"l.isSameType(target)"
+        // is satisfied by the promoted TYPE alone -- leaving the
+        // operand's own AST node (and the value it actually compiles
+        // to) at its original, narrower width, never promoted at all,
+        // while the BinaryOpNode's own type (set below) claims the
+        // wider "target" width. The two sides of a "==" or an
+        // arithmetic op ending up at genuinely different widths this
+        // way is exactly what silently produced wrong results here
+        // (e.g. "b == (unsigned char)(x + 1)" comparing a full int
+        // against a value that was never actually widened to match).
+        if (! node.left().type().isSameType(target)) {
             // insert cast on left expr
             node.setLeft(new CastNode(target, node.left()));
         }
-        if (! r.isSameType(target)) {
+        if (! node.right().type().isSameType(target)) {
             // insert cast on right expr
             node.setRight(new CastNode(target, node.right()));
         }
@@ -727,7 +743,9 @@ class TypeChecker extends Visitor {
     }
     // #@@}
 
-    // Usual arithmetic conversion for ILP32 platform.
+    // Usual arithmetic conversion, generalized over any integer size
+    // (char/short/int/long/long long and their unsigned counterparts) by
+    // C99's own actual rule rather than a fixed set of named type pairs:
     // Size of l, r >= sizeof(int) (for the integer case; arithPromotion
     // leaves floating types untouched, so they can be any size here).
     // #@@range/usualArithmeticConversion{
@@ -735,26 +753,31 @@ class TypeChecker extends Visitor {
         if (l.isFloat() || r.isFloat()) {
             return usualArithmeticConversionFloat(l, r);
         }
-        Type s_int = typeTable.signedInt();
-        Type u_int = typeTable.unsignedInt();
-        Type s_long = typeTable.signedLong();
-        Type u_long = typeTable.unsignedLong();
-        if (    (l.isSameType(u_int) && r.isSameType(s_long))
-             || (r.isSameType(u_int) && l.isSameType(s_long))) {
-            return u_long;
+        // Whichever operand has the strictly wider integer *rank* (here,
+        // just its size -- this project's integer types are all nested
+        // char < short < int <= long <= long long, with "long long"
+        // always exactly 8 bytes per C99 regardless of "long"'s own
+        // width on this platform, see TypeTable) wins outright,
+        // regardless of signedness: it can represent every value the
+        // narrower type can, signed or not. When the two are the same
+        // size (e.g. "unsigned int"/"long" on a platform where they're
+        // both 4 bytes, or plain "int"/"unsigned int"), the unsigned
+        // one wins instead, since a same-size signed type can't
+        // represent every value its unsigned counterpart can.
+        //
+        // This used to be a fixed cascade of isSameType() checks against
+        // only signed/unsigned int/long, silently falling through to
+        // plain "int" -- discarding all but the bottom 32 bits -- for
+        // any expression mixing a "long long"/"unsigned long long"
+        // operand with anything else at all (even a plain "int"
+        // literal), since neither was ever compared against.
+        if (l.size() != r.size()) {
+            return (l.size() > r.size()) ? l : r;
         }
-        else if (l.isSameType(u_long) || r.isSameType(u_long)) {
-            return u_long;
+        if (l.isSigned() != r.isSigned()) {
+            return l.isSigned() ? r : l;
         }
-        else if (l.isSameType(s_long) || r.isSameType(s_long)) {
-            return s_long;
-        }
-        else if (l.isSameType(u_int)  || r.isSameType(u_int)) {
-            return u_int;
-        }
-        else {
-            return s_int;
-        }
+        return l;
     }
     // #@@}
 

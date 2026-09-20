@@ -250,6 +250,16 @@ run_case preprocessor   "42;noargs;witharg:7;1;0;1;1000"
 # what actually exercises stddef.h's own include guard.
 run_case duplicated-import "OK"
 
+# --- three real bugs found by running a subset of the GCC c-torture
+# execute tests through this compiler: a narrowing cast silently
+# dropped instead of truncating (isEffectiveCast()), "long long"/
+# "unsigned long long" mixed with a plain "int" silently falling back
+# to 32-bit arithmetic (usualArithmeticConversion()), and a narrow
+# operand's promotion never actually materialized as a cast when it
+# happened to already equal the target type (arithmeticImplicitCast())
+# -- see arith-conversion.c's own comments for each one ---
+run_case arith-conversion "1;255;37;1;"
+
 echo
 echo "pass=$pass known-diff=$known fail=$fail"
 rm -rf "$SCRATCH"

@@ -1208,10 +1208,34 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator,
             // #@@}
             break;
         case S_CAST:
-            as.movsx(ax(src), ax(dest));
+            if (dest.size() < src.size()) {
+                // A narrowing cast still needs a real instruction: the
+                // value already sitting in the accumulator may carry
+                // garbage above the destination type's own width (e.g.
+                // it arrived from wider arithmetic), and simply
+                // addressing a narrower alias of the same register
+                // without re-extending would leave that garbage in
+                // place for any later use that reads the full register
+                // (a truthiness test, a comparison, further arithmetic,
+                // ...). Re-sign-extending the low dest-sized bits back
+                // over the whole register -- movsx from the narrow
+                // alias into the wide one, both naming the exact same
+                // physical register -- correctly reproduces what
+                // storing to, then reloading from, a real dest-sized
+                // variable would have done.
+                as.movsx(ax(dest), ax(src));
+            }
+            else {
+                as.movsx(ax(src), ax(dest));
+            }
             break;
         case U_CAST:
-            as.movzx(ax(src), ax(dest));
+            if (dest.size() < src.size()) {
+                as.movzx(ax(dest), ax(src));
+            }
+            else {
+                as.movzx(ax(src), ax(dest));
+            }
             break;
         default:
             throw new Error("unknown unary operator: " + node.op());
