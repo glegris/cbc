@@ -42,6 +42,7 @@ test_06_variables() {
     assert_out "1;2;3;4;10;11;0;0;30;31;1;5;9;0;99;2" ./designated-init
     assert_out "7;8;100;200;11;12" ./compound-literal-static
     assert_out "5;5;0;0;1;1;0;0;5;3;9;9;42;6;1;2;3;0" ./address-of-static
+    assert_out "0;1;4;9;16;0;0;0;10;20;30;40;4950" ./malloc
     assert_out "16;16;16;msgstring" ./const
     assert_compile_error var-semcheck.c
 

@@ -40,7 +40,10 @@ import static org.objectweb.asm.Opcodes.*;
  * "p->m" and pointer arithmetic all fall out of the IR's existing
  * Addr/Mem/Bin lowering once these primitives exist, with no further
  * special-casing needed. A tiny bump-allocated heap arena ("$hp") backs
- * argv construction (see emitMainBridge); there is no free().
+ * argv construction (see emitMainBridge), which then hands off to a real
+ * malloc()/free() (a first-fit free-list allocator over the same "mem"
+ * array, StandardRuntime#malloc and friends) for the rest of the
+ * program's own dynamic allocation.
  *
  * struct/union BY VALUE (as a parameter, a return value, or the whole
  * target of an assignment) is supported through a hidden-pointer
@@ -138,6 +141,7 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             "strncmp", "strchr", "memcpy", "memmove", "memset", "memcmp",
             // <stdlib.h>
             "exit", "abs", "labs", "atoi", "atol", "atof",
+            "malloc", "calloc", "realloc", "free",
             // <stdarg.h> -- va_init() is a separate compile-time
             // intrinsic (see compileVaInit), not listed here.
             "va_next"
@@ -657,6 +661,14 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             mv.visitJumpInsn(GOTO, loopStart);
             mv.visitLabel(loopEnd);
         }
+        // malloc()'s free store starts right where argv construction (if
+        // any) left off, so it can never overlap it -- see
+        // StandardRuntime#mir_init_heap's own doc comment. Runs even for
+        // a "main(void)" program (params.size() == 0), where $hp is still
+        // exactly staticEnd (see emitClinit) since nothing bumped it yet.
+        mv.visitFieldInsn(GETSTATIC, className, RT_FIELD, runtimeDesc());
+        mv.visitFieldInsn(GETSTATIC, className, HP_FIELD, "J");
+        mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_RUNTIME_CLASS, "mir_init_heap", "(J)V", false);
         if (params.size() >= 1) {
             mv.visitVarInsn(ILOAD, 1);
             if (paramOrReturnWidth(params.get(0).type()) == Width.LONG) {

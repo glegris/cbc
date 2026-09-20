@@ -3,6 +3,8 @@ package net.loveruby.cflat.sysdep.jvm.runtime;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Arrays;
+import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * Hand-written Java implementations of external functions callable from a
@@ -244,6 +246,131 @@ public class StandardRuntime {
             if (ca != cb) return ca - cb;
         }
         return 0;
+    }
+
+    //
+    // <stdlib.h> malloc()/calloc()/realloc()/free(): a first-fit free-list
+    // allocator carved out of the same "mem" array everything else already
+    // uses, starting right where the static-data area (globals/string
+    // literals) and, if built, argv end -- see mir_init_heap(), called
+    // once from CodeGenerator's generated main() bridge, right before it
+    // calls into the compiled program's own main(). Unlike glibc's malloc,
+    // this can never grow "mem" past HEAP_SIZE (a real byte[] can't be
+    // resized in place), so running out of heap space returns NULL, same
+    // as any other conforming malloc is allowed to do under real memory
+    // pressure -- there's no separate "heap exhausted" case to handle.
+    //
+
+    private static final class Block {
+        long size;
+        boolean free;
+        Block(long size, boolean free) { this.size = size; this.free = free; }
+    }
+
+    /** address -> block, for every address malloc() has ever handed out
+     *  (whether currently free or still live) -- the unallocated tail
+     *  from heapNext to the end of "mem" isn't represented here at all;
+     *  malloc() only consults this map for a reusable free block, falling
+     *  back to carving a fresh one off heapNext. */
+    private final TreeMap<Long, Block> heapBlocks = new TreeMap<Long, Block>();
+    private long heapNext = -1;  // -1 until mir_init_heap() runs
+
+    /** Called exactly once, after CodeGenerator's generated main() bridge
+     *  has built argv (if any) but before it calls the compiled program's
+     *  own main() -- start is whatever "$hp" (the pre-existing argv bump
+     *  allocator) ended up at, so malloc's own free store picks up right
+     *  after argv instead of risking overlapping it. */
+    public void mir_init_heap(long start) {
+        heapNext = start;
+        heapBlocks.clear();
+    }
+
+    public long malloc(long size) {
+        if (size <= 0) {
+            return 0;
+        }
+        // 8-byte alignment, matching real malloc's guarantee that the
+        // returned address is suitably aligned for this backend's widest
+        // scalar (long/double/any pointer).
+        long asize = (size + 7L) & ~7L;
+        for (Map.Entry<Long, Block> e : heapBlocks.entrySet()) {
+            Block b = e.getValue();
+            if (b.free && b.size >= asize) {
+                long leftover = b.size - asize;
+                b.free = false;
+                if (leftover > 0) {
+                    b.size = asize;
+                    heapBlocks.put(e.getKey() + asize, new Block(leftover, true));
+                }
+                return e.getKey();
+            }
+        }
+        if (heapNext + asize > mem.length) {
+            return 0;  // out of memory -- see this section's own doc comment
+        }
+        long addr = heapNext;
+        heapBlocks.put(addr, new Block(asize, false));
+        heapNext += asize;
+        return addr;
+    }
+
+    public long calloc(long nmemb, long size) {
+        long total = nmemb * size;
+        long addr = malloc(total);
+        if (addr != 0) {
+            Arrays.fill(mem, at(addr), at(addr + total), (byte) 0);
+        }
+        return addr;
+    }
+
+    public long realloc(long addr, long size) {
+        if (addr == 0) {
+            return malloc(size);
+        }
+        if (size == 0) {
+            free(addr);
+            return 0;
+        }
+        Block b = heapBlocks.get(addr);
+        if (b == null) {
+            return 0;  // not a pointer malloc() ever gave out -- real realloc() is UB here too
+        }
+        if (b.size >= size) {
+            return addr;  // already big enough; real realloc() is free to keep it as-is
+        }
+        long newAddr = malloc(size);
+        if (newAddr == 0) {
+            return 0;
+        }
+        System.arraycopy(mem, at(addr), mem, at(newAddr), at(b.size));
+        free(addr);
+        return newAddr;
+    }
+
+    public void free(long addr) {
+        if (addr == 0) {
+            return;
+        }
+        Block b = heapBlocks.get(addr);
+        if (b == null) {
+            return;  // freeing a pointer malloc() never gave out is UB; just ignore it
+        }
+        b.free = true;
+        // Merge with the immediately-following block if it's also free,
+        // so a long malloc/free churn doesn't fragment the heap into ever
+        //-smaller unusable pieces. Not merged backward with a preceding
+        // free block -- finding it would need a second lookup this simple
+        // a scheme doesn't bother with; forward-only merging still keeps
+        // fragmentation bounded for the common allocate/free/reallocate
+        // patterns real programs use.
+        Long nextKey = heapBlocks.higherKey(addr);
+        if (nextKey != null && nextKey == addr + b.size) {
+            Block next = heapBlocks.get(nextKey);
+            if (next.free) {
+                b.size += next.size;
+                heapBlocks.remove(nextKey);
+            }
+        }
     }
 
     //
