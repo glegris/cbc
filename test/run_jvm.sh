@@ -42,8 +42,8 @@ declare -A KNOWN_DIFF=(
     [ptrdiff]="pointers are 8-byte JVM longs here, not 4-byte like x86, so pointer arithmetic differs"
     [sizeof-type]="sizeof(long)/sizeof(T*) is 8 on the JVM backend, not 4 like x86"
     [sizeof-expr]="sizeof(long)/sizeof(T*) is 8 on the JVM backend, not 4 like x86"
-    [implicitaddr]="&printf is rejected: intrinsics have no real address on the JVM backend"
-    [funcptr]="&printf is rejected: intrinsics have no real address on the JVM backend"
+    [implicitaddr]="&printf is rejected: taking the address of a variadic function is not supported on the JVM backend"
+    [funcptr]="calling through a variadic function pointer is not supported on the JVM backend"
     [varargs]="vfprintf() -- unlike printf() -- has no real implementation on the JVM backend yet (see stdio.h's own doc comment); unrelated to varargs themselves, which this backend does support"
 )
 # usertype (&puts) and gvar (&stdin) used to be here too: both puts()
@@ -237,6 +237,7 @@ run_case string-funcs "o;3;3;o world;world;3;1;copy me;dup me;trun;a.b.c.;1;3"
 run_case ctype-funcs "1;0;1;0;0;1;1;0;1;0;1;1"
 run_case narrowing-cast-return "132767"
 run_case stdlib-funcs "3;1;3;2;-123;abc;255;314;xyz;1;1;1;2;3;4;5;1;4"
+run_case printf-funcs "7-seven;[   42][42   ][00042][+42][-42];[hi        ][he];[4000000000][ff][FF][0xff][10][123456789];[3.141590][3.14][    3.14];100%;x=5,y=abc,9;12,5;1"
 run_case file-io "hello file
 Xworld;0;1;0;1"
 

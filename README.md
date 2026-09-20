@@ -488,12 +488,18 @@ C-style address space:
     unary `-`), comparisons (including correct IEEE 754 "unordered"
     NaN semantics -- any comparison against NaN is false except `!=`),
     casts to/from integers and between `float`/`double`, `++`/`--`, and
-    `printf`'s `%f`/`%e`/`%g` (field width/precision specifiers, like
-    this backend's existing `%d`/`%s`, are not interpreted). This is a
-    JVM-only feature for now -- the x86 backend has no floating-point
-    codegen at all (no FPU/SSE instructions are ever emitted) and
-    rejects any use of `float`/`double` at code generation time instead
-    of miscompiling it. There is no `long double` (a plain or
+    `printf`'s `%f`/`%F` (field width/precision/flags are interpreted,
+    same as `%d`/`%s`; see `<stdio.h>` below -- there is no `%e`/`%g`/
+    `%a`). This is a JVM-only feature for now -- the x86 backend has no
+    floating-point codegen at all (no FPU/SSE instructions are ever
+    emitted) and rejects any use of `float`/`double` at code generation
+    time instead of miscompiling it; since `<stdio.h>`'s own `printf()`
+    now always needs a `double` internally to support `%f` at all (see
+    `<stdio.h>` below), this in practice means the entire
+    `printf`/`fprintf`/`sprintf`/`snprintf` family (and their `v...()`
+    counterparts) can only be compiled for the JVM backend, even for a
+    call site that never itself passes a `%f`. There is no `long double`
+    (a plain or
     `L`-suffixed floating constant is just a `double`). **Not
     supported**: compound assignment (`+= -= *= /=`) on a `float`/
     `double` operand -- `OpAssignNode`'s own type check unconditionally
@@ -523,15 +529,14 @@ C-style address space:
     convention to call into, unlike a fixed-arity one -- see
     `StandardRuntime`/`NativeRuntime` below).
 
-Remaining gaps: `putchar(int)`, `puts(char*)` and `printf(char*, ...)` are
-compile-time intrinsics (`printf`'s format string itself must still be a
-compile-time literal, though `puts`/`%s` accept any `char*` expression,
-not just literals) that compile to calls into `StandardRuntime` (below)
-just like anything else, but have no real address, so `&putchar` and
-friends are rejected. Lastly, `long` and every pointer type are real
-8-byte JVM `long`s here (see the class comment on
-`sysdep/jvm/CodeGenerator.java`), so `sizeof(long)`/`sizeof(T*)` are 8,
-not 4 like on the (32-bit-only) x86 backend.
+Remaining gaps: `putchar`/`puts`/`printf` and friends are no longer
+compile-time intrinsics at all -- `<stdio.h>` gives every one of them a
+real definition (see below) -- but a variadic function still has no real
+address on this backend (see above), so `&printf` and friends are still
+rejected. Lastly, `long` and every pointer type are real 8-byte JVM
+`long`s here (see the class comment on `sysdep/jvm/CodeGenerator.java`),
+so `sizeof(long)`/`sizeof(T*)` are 8, not 4 like on the (32-bit-only)
+x86 backend.
 
 ### Calling external functions: StandardRuntime and NativeRuntime
 
@@ -593,18 +598,52 @@ knows about directly -- is simply a call to an *inherited* method:
     `StandardRuntime` primitives (`mir_sysio_open`/`_close`/`_read`/
     `_write`/`_seek`/`_tell`/`_feof`), each backed by a real
     `java.io.RandomAccessFile` (fd 0/1/2 go through `System.in`/`out`/
-    `err` instead, the same streams `printf` already uses). `printf`
-    itself is still the one remaining compile-time intrinsic (a literal
-    format string, as before); `fprintf`/`sprintf`/`snprintf` and their
-    `v...()` counterparts are declared but not implemented on this
-    backend at all yet -- there's no portable-C way to write a real
-    format-string parser/dispatcher in cflat itself the way the rest of
-    this header is, since `"..."` can only be walked with `va_arg_t`'s
-    own fixed-width slots (see `<stdarg.h>`), never type-directed by a
-    runtime-inspected format string the way a real `vsnprintf()` needs
-    to be; calling one of those five throws `NotImplementedException` at
-    runtime on this backend (they work as normal, linked against the
-    real libc, on x86).
+    `err` instead, the same streams `printf` already uses).
+  * **`<stdio.h>` `printf`/`fprintf`/`sprintf`/`snprintf`** (and their
+    `v...()` counterparts) are no longer intrinsics or bare externs --
+    `printf` was the very last compile-time intrinsic left, and now has
+    a real portable-C definition like everything else in this header,
+    adapted from Marco Paland's MIT-licensed `printf.c`: a runtime-
+    inspected format string (not just a compile-time literal), field
+    width/precision/flags, and `%d`/`%i`/`%u`/`%x`/`%X`/`%o`/`%b`/`%c`/
+    `%s`/`%p`/`%f`/`%F`/`%%` are all interpreted (not `%e`/`%g`/`%a`, or
+    a true `long long`-sized argument -- `%lld`/`ll` is read the same as
+    a plain `%ld`/`l`, correct only where `long` is already 64-bit, i.e.
+    the JVM backend). `"..."` is walked one `va_arg_t` slot at a time
+    (see `<stdarg.h>`) and reinterpreted by hand for each conversion
+    (e.g. a `%f`'s bits are read back out as a `double`), since there is
+    no type-directed `va_arg()` macro to lean on the way a real libc's
+    own `vsnprintf()` has. **This entire family is JVM-only**: `%f`'s
+    `double` arithmetic (see the `float`/`double` bullet above) means
+    the x86 backend's blanket rejection of floating point applies here
+    too, and unlike a genuinely unused function elsewhere in this header
+    (see the dead-code pruning note just below), it can't be sidestepped
+    by simply not calling `printf()` with a `%f` -- the format string is
+    a runtime value in general, so the formatter that handles `%f` is
+    always reachable the moment `printf`/`fprintf`/`sprintf`/`snprintf`
+    is called *at all*, even with a literal, no-`%f` format string. So,
+    as of this real implementation, **no program that calls any function
+    in this family can be compiled for the x86 backend** -- a real,
+    accepted regression from when they were bare `extern` declarations
+    linked against the real libc's own working `printf` on x86; giving
+    the JVM backend a real implementation isn't compatible with keeping
+    that x86 fallback, since both must now share the one definition in
+    this header (see this project's own no-per-backend-headers stance).
+  * The x86 backend also now prunes dead code: it only ever type-checks
+    the floating-point/struct-by-value-return corners it flatly rejects
+    for a `DefinedFunction`/`DefinedVariable` actually reachable (by
+    call, name, or address-of) from this file's own externally-visible
+    surface (a non-`static` function/variable, or `main`) -- see
+    `computeReachableEntities` in `sysdep/x86/CodeGenerator.java`.
+    Without it, merely `#include`ing `<stdlib.h>` (which unconditionally
+    defines `div()`/`ldiv()`, returning a struct by value, and
+    `strtod()`/`atof()`, returning `double`) would break x86 compilation
+    for every program, whether or not it actually calls any of those
+    three. This is what makes `div`/`ldiv`/`strtod`/`atof` usable on x86
+    (for a program that doesn't itself call them) despite the backend's
+    own float/struct-by-value limitations -- it just can't rescue
+    `printf` and friends, per the previous bullet's own reachability
+    argument.
   * **`NativeRuntime`** is generated fresh per program and contains one
     stub -- throwing `NotImplementedException` -- for each external
     function the program calls that isn't already in `StandardRuntime`

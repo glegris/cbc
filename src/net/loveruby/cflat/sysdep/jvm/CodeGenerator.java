@@ -39,11 +39,21 @@ import static org.objectweb.asm.Opcodes.*;
  * compile-time constant (globals/string literals); "&x", "*p", "p[i]",
  * "p->m" and pointer arithmetic all fall out of the IR's existing
  * Addr/Mem/Bin lowering once these primitives exist, with no further
- * special-casing needed. A tiny bump-allocated heap arena ("$hp") backs
- * argv construction (see emitMainBridge), which then hands off to a real
- * malloc()/free() (a first-fit free-list allocator over the same "mem"
- * array, StandardRuntime#malloc and friends) for the rest of the
- * program's own dynamic allocation.
+ * special-casing needed. Every dynamic allocation this backend itself
+ * ever needs -- argv construction (see emitMainBridge), a vararg call's
+ * marshalled "..." block, a by-value struct/union copy's scratch buffer
+ * -- goes through "$alloc", which is just a thin wrapper around the same
+ * malloc() the compiled program's own C code can call (a first-fit
+ * free-list allocator over the "mem" array, StandardRuntime#malloc and
+ * friends): there is deliberately no separate, independent bump pointer
+ * for the compiler's own internal allocations anymore, since two
+ * bump pointers racing forward from the same starting address (one for
+ * $alloc, one for malloc()'s own free store) could -- and once actually
+ * did -- hand out overlapping memory the moment both had been used at
+ * least once. StandardRuntime#mir_init_heap seeds this one shared heap
+ * (to right after the static-data area computeStaticLayout laid out)
+ * from <clinit>, before anything -- including argv construction -- has
+ * had a chance to allocate a single byte.
  *
  * struct/union BY VALUE (as a parameter, a return value, or the whole
  * target of an assignment) is supported through a hidden-pointer
@@ -78,11 +88,12 @@ import static org.objectweb.asm.Opcodes.*;
  * for the same reason as above.
  *
  * Calling a function that isn't defined in the same source file is
- * rejected, except for three libc intrinsics translated to real JVM
- * calls so printf-based programs work: putchar(int), puts(char*) and
- * printf(char*, ...) -- the format string itself must still be a
- * compile-time string literal, but puts/%s now accept any char*
- * expression (read from memory at run time, not just literals).
+ * rejected, except for a small set of compile-time intrinsics (see
+ * STANDARD_RUNTIME_FUNCTIONS and compileCallInto) backed by real JVM
+ * methods in StandardRuntime -- putchar/puts/printf among them are now
+ * just ordinary <stdio.h> function bodies (see import/stdio.h), not
+ * special-cased here at all, so their format strings/arguments are
+ * fully runtime values like any other C program.
  * Finally, this backend maps cflat's "long" and every pointer type to a
  * real 8-byte JVM long (see JVMPlatform's lp64 TypeTable), so sizeof(long)
  * and sizeof(T*) are 8 here versus 4 on the (32-bit-only) x86 backend.
@@ -98,7 +109,6 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
     private static final String MEM_FIELD = "$mem";
     private static final String BUF_FIELD = "$buf";
     private static final String SP_FIELD = "$sp";
-    private static final String HP_FIELD = "$hp";
     private static final String STR_METHOD = "$str";
     private static final String NEWSTR_METHOD = "$newstr";
     private static final String ALLOC_METHOD = "$alloc";
@@ -272,7 +282,6 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         cw.visitField(ACC_PRIVATE | ACC_STATIC, MEM_FIELD, "[B", null, null).visitEnd();
         cw.visitField(ACC_PRIVATE | ACC_STATIC, BUF_FIELD, BUF_DESC, null, null).visitEnd();
         cw.visitField(ACC_PRIVATE | ACC_STATIC, SP_FIELD, "J", null, null).visitEnd();
-        cw.visitField(ACC_PRIVATE | ACC_STATIC, HP_FIELD, "J", null, null).visitEnd();
         cw.visitField(ACC_PRIVATE | ACC_STATIC, RT_FIELD, runtimeDesc(), null, null).visitEnd();
 
         emitConstructor();
@@ -447,8 +456,17 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
 
         mv.visitLdcInsn((long) HEAP_SIZE);
         mv.visitFieldInsn(PUTSTATIC, className, SP_FIELD, "J");
+
+        // Seeds malloc()'s free store (see StandardRuntime#mir_init_heap
+        // and $alloc/emitAllocHelper's own doc comments) to right after
+        // the static-data area this class just finished initializing
+        // above -- before anything, including argv construction in
+        // emitMainBridge, has had a chance to allocate a single byte
+        // through $alloc, so there is only ever one heap cursor in play,
+        // never two independently-advancing ones that could overlap.
+        mv.visitFieldInsn(GETSTATIC, className, RT_FIELD, runtimeDesc());
         mv.visitLdcInsn(staticEnd);
-        mv.visitFieldInsn(PUTSTATIC, className, HP_FIELD, "J");
+        mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_RUNTIME_CLASS, "mir_init_heap", "(J)V", false);
 
         mv.visitInsn(RETURN);
         mv.visitMaxs(0, 0);
@@ -477,22 +495,34 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
 
     //
     // Runtime support methods, handwritten in bytecode (there is no
-    // cflat source for them): $alloc bumps the heap pointer, $str reads a
-    // NUL-terminated C string out of memory into a Java String, $newstr
-    // does the reverse (used to build argv; see emitMainBridge).
+    // cflat source for them): $alloc hands out a fresh, never-colliding
+    // block of simulated memory, $str reads a NUL-terminated C string out
+    // of memory into a Java String, $newstr does the reverse (used to
+    // build argv; see emitMainBridge).
     //
 
+    /** $alloc(size) used to be its own tiny independent bump allocator
+     *  (an ever-increasing "$hp" field, bumped and returned right here),
+     *  entirely separate from StandardRuntime's own malloc() free store
+     *  -- the two started at the very same address and each advanced
+     *  forward independently, so the moment a program used both (e.g.
+     *  any malloc() call followed by any vararg call, since a vararg
+     *  call's "..." tail is marshalled through $alloc -- see
+     *  compileVarargTail), the second allocator to run would hand out
+     *  memory the first one had already given to the program, silently
+     *  corrupting it. $alloc is now just a thin wrapper around the exact
+     *  same malloc() a compiled program's own C code calls, so every
+     *  allocation this backend ever hands out -- whether from user code
+     *  or its own internal bookkeeping -- comes from the one shared free
+     *  store and can never overlap another live allocation. (These
+     *  internal allocations are never free()d, same as before this
+     *  change; that's fine here, since none of them needs to be.) */
     private void emitAllocHelper() {
         MethodVisitor mv = cw.visitMethod(ACC_PRIVATE | ACC_STATIC, ALLOC_METHOD, "(J)J", null, null);
         mv.visitCode();
-        // long addr = $hp; $hp += size; return addr;
-        mv.visitFieldInsn(GETSTATIC, className, HP_FIELD, "J");
-        mv.visitVarInsn(LSTORE, 2);
-        mv.visitFieldInsn(GETSTATIC, className, HP_FIELD, "J");
+        mv.visitFieldInsn(GETSTATIC, className, RT_FIELD, runtimeDesc());
         mv.visitVarInsn(LLOAD, 0);
-        mv.visitInsn(LADD);
-        mv.visitFieldInsn(PUTSTATIC, className, HP_FIELD, "J");
-        mv.visitVarInsn(LLOAD, 2);
+        mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_RUNTIME_CLASS, "malloc", "(J)J", false);
         mv.visitInsn(LRETURN);
         mv.visitMaxs(0, 0);
         mv.visitEnd();
@@ -670,14 +700,10 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             mv.visitJumpInsn(GOTO, loopStart);
             mv.visitLabel(loopEnd);
         }
-        // malloc()'s free store starts right where argv construction (if
-        // any) left off, so it can never overlap it -- see
-        // StandardRuntime#mir_init_heap's own doc comment. Runs even for
-        // a "main(void)" program (params.size() == 0), where $hp is still
-        // exactly staticEnd (see emitClinit) since nothing bumped it yet.
-        mv.visitFieldInsn(GETSTATIC, className, RT_FIELD, runtimeDesc());
-        mv.visitFieldInsn(GETSTATIC, className, HP_FIELD, "J");
-        mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_RUNTIME_CLASS, "mir_init_heap", "(J)V", false);
+        // The heap (malloc()'s free store, which argv construction above
+        // -- via $alloc -- already drew from too) was already seeded
+        // in <clinit>, before argv construction ever ran -- see
+        // emitClinit's own comment on why that ordering matters.
         if (params.size() >= 1) {
             mv.visitVarInsn(ILOAD, 1);
             if (paramOrReturnWidth(params.get(0).type()) == Width.LONG) {
@@ -2197,7 +2223,7 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             List<Expr> allArgs = node.args();
             int fixedCount = df.parameters().size();
             for (int i = 0; i < fixedCount; i++) {
-                compileArg(allArgs.get(i));
+                compileArg(allArgs.get(i), asmWidthOf(df.parameters().get(i).type()));
             }
             if (df.type().getFunctionType().isVararg()) {
                 compileVarargTail(allArgs, fixedCount);
@@ -2311,8 +2337,9 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                 nativeStubsNeeded.put(name, desc);
             }
             pushRuntime();
-            for (Expr arg : node.args()) {
-                compileArg(arg);
+            List<Expr> args = node.args();
+            for (int i = 0; i < args.size(); i++) {
+                compileArg(args.get(i), asmWidthOf(f.parameters().get(i).type()));
             }
             if (isAggregate(f.returnType())) {
                 pushAggregateDest(destAddrExpr, f.returnType().size());
@@ -2355,8 +2382,10 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             // appended *last*; see buildDescriptor) -- so it must be
             // pushed before the real arguments, not after.
             compile(node.expr());
-            for (Expr arg : node.args()) {
-                compileArg(arg);
+            List<Expr> args = node.args();
+            List<net.loveruby.cflat.type.Type> ptypes = ft.paramTypes();
+            for (int i = 0; i < args.size(); i++) {
+                compileArg(args.get(i), asmWidthOf(ptypes.get(i)));
             }
             if (isAggregate(ft.returnType())) {
                 pushAggregateDest(destAddrExpr, ft.returnType().size());
@@ -2369,9 +2398,23 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
          *  into a fresh scratch buffer first and passing *that* address
          *  (proper C by-value semantics: the callee must not be able to
          *  observe changes back in the caller's own copy). */
-        private void compileArg(Expr arg) {
+        /** Compiles one fixed-position call argument, coercing it to the
+         *  callee parameter's own declared width ("wanted") rather than
+         *  trusting the argument expression's resultWidth() alone: a
+         *  narrowing CastNode the caller's source wrote explicitly (e.g.
+         *  "(unsigned int)a_long_value") can be dropped entirely by
+         *  IRGenerator (see CastNode#isEffectiveCast() -- same-or-smaller
+         *  size is a free no-op bit-reinterpretation on x86, but not on
+         *  the JVM, where int and long are different stack/local slot
+         *  categories), leaving the full-width value to push against a
+         *  narrower descriptor slot -- a VerifyError at class load, the
+         *  same failure mode as the one Return already guards against
+         *  (see FunctionCompiler#visit(Return)'s own doc comment). */
+        private void compileArg(Expr arg, net.loveruby.cflat.asm.Type wanted) {
             if (!isAggregateVar(arg)) {
+                net.loveruby.cflat.asm.Type rw = resultWidth(arg);
                 compile(arg);
+                coerceWidth(rw, wanted);
                 return;
             }
             Entity src = ((Var) arg).entity();

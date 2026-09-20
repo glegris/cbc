@@ -143,18 +143,22 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator,
     private AssemblyCode generateAssemblyCode(IR ir) {
         AssemblyCode file = newAssemblyCode();
         file._file(ir.fileName());
-        if (ir.isGlobalVariableDefined()) {
-            generateDataSection(file, ir.definedGlobalVariables());
+        Set<Entity> reachable = computeReachableEntities(ir);
+        List<DefinedVariable> gvars = filterReachable(ir.definedGlobalVariables(), reachable);
+        List<DefinedFunction> funcs = filterReachable(ir.definedFunctions(), reachable);
+        List<DefinedVariable> comms = filterReachable(ir.definedCommonSymbols(), reachable);
+        if (!gvars.isEmpty()) {
+            generateDataSection(file, gvars);
         }
         if (ir.isStringLiteralDefined()) {
             generateReadOnlyDataSection(file, ir.constantTable());
         }
-        if (ir.isFunctionDefined()) {
-            generateTextSection(file, ir.definedFunctions());
+        if (!funcs.isEmpty()) {
+            generateTextSection(file, funcs);
         }
         // #@@range/generateAssemblyCode_last{
-        if (ir.isCommonSymbolDefined()) {
-            generateCommonSymbols(file, ir.definedCommonSymbols());
+        if (!comms.isEmpty()) {
+            generateCommonSymbols(file, comms);
         }
         if (options.isPositionIndependent()) {
             PICThunk(file, GOTBaseReg());
@@ -163,6 +167,132 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator,
         // #@@}
     }
     // #@@}
+
+    /** Which top-level functions/variables are actually reachable from
+     *  this file's own externally-visible surface (a non-"static"
+     *  function or variable -- "main" among them, necessarily non-
+     *  static itself), found by walking the call/reference graph
+     *  outward from there. A portable-C header meant to work for both
+     *  backends (see import/*.h and this project's own README) defines
+     *  every function it offers unconditionally, whether or not any
+     *  given translation unit actually ends up calling it -- e.g.
+     *  <stdio.h>'s printf() engine always defines a float-formatting
+     *  helper internally, and <stdlib.h> always defines div()/ldiv()
+     *  (returning a struct by value), regardless of whether the
+     *  *including* file itself ever touches a float or calls div().
+     *  Both of those are features this backend outright rejects at
+     *  code generation time (see e.g. visit(Return) and
+     *  generateFuncPrologue() below) -- so compiling every DEFINED
+     *  function unconditionally would make "#include <stdio.h>" alone
+     *  enough to break x86 compilation for *every* program, whether or
+     *  not it exercises any of those rejected features itself. Pruning
+     *  down to what's actually reachable avoids that, exactly like a
+     *  real linker never pulling an unreferenced object file's symbols
+     *  in to begin with. */
+    private Set<Entity> computeReachableEntities(IR ir) {
+        Set<Entity> reachable = new HashSet<Entity>();
+        Deque<DefinedFunction> funcWork = new ArrayDeque<DefinedFunction>();
+        Deque<DefinedVariable> varWork = new ArrayDeque<DefinedVariable>();
+        for (DefinedFunction f : ir.definedFunctions()) {
+            if (!f.isPrivate() && reachable.add(f)) {
+                funcWork.add(f);
+            }
+        }
+        List<DefinedVariable> allVars = new ArrayList<DefinedVariable>();
+        allVars.addAll(ir.definedGlobalVariables());
+        allVars.addAll(ir.definedCommonSymbols());
+        for (DefinedVariable v : allVars) {
+            if (!v.isPrivate() && reachable.add(v)) {
+                varWork.add(v);
+            }
+        }
+        ReachabilityVisitor visitor = new ReachabilityVisitor(reachable, funcWork, varWork);
+        while (!funcWork.isEmpty() || !varWork.isEmpty()) {
+            while (!funcWork.isEmpty()) {
+                for (Stmt s : funcWork.remove().ir()) {
+                    s.accept(visitor);
+                }
+            }
+            while (!varWork.isEmpty()) {
+                DefinedVariable v = varWork.remove();
+                if (v.hasStaticInitEntries()) {
+                    for (StaticInitEntry e : v.staticInitEntries()) {
+                        e.value().accept(visitor);
+                    }
+                }
+                else if (v.hasInitializer() && v.ir() != null) {
+                    v.ir().accept(visitor);
+                }
+            }
+        }
+        return reachable;
+    }
+
+    private static <T> List<T> filterReachable(List<T> all, Set<Entity> reachable) {
+        List<T> result = new ArrayList<T>();
+        for (T t : all) {
+            if (reachable.contains(t)) {
+                result.add(t);
+            }
+        }
+        return result;
+    }
+
+    /** Walks one reachable function's own body (or one reachable
+     *  variable's initializer) collecting every DefinedFunction/
+     *  DefinedVariable it in turn calls, names, or takes the address
+     *  of, feeding newly-discovered ones back into
+     *  computeReachableEntities()'s own worklists so they get scanned
+     *  too. A separate class (rather than reusing the outer
+     *  CodeGenerator's own IRVisitor implementation, which does real
+     *  code generation) since all this needs to do is look, not
+     *  generate anything. */
+    private static final class ReachabilityVisitor implements IRVisitor<Void,Void> {
+        private final Set<Entity> reachable;
+        private final Deque<DefinedFunction> funcWork;
+        private final Deque<DefinedVariable> varWork;
+
+        ReachabilityVisitor(Set<Entity> reachable, Deque<DefinedFunction> funcWork,
+                Deque<DefinedVariable> varWork) {
+            this.reachable = reachable;
+            this.funcWork = funcWork;
+            this.varWork = varWork;
+        }
+
+        private void visitEntity(Entity ent) {
+            if (ent instanceof DefinedFunction && reachable.add(ent)) {
+                funcWork.add((DefinedFunction) ent);
+            }
+            else if (ent instanceof DefinedVariable && reachable.add(ent)) {
+                varWork.add((DefinedVariable) ent);
+            }
+        }
+
+        public Void visit(ExprStmt s) { s.expr().accept(this); return null; }
+        public Void visit(Assign s) { s.lhs().accept(this); s.rhs().accept(this); return null; }
+        public Void visit(CJump s) { s.cond().accept(this); return null; }
+        public Void visit(Jump s) { return null; }
+        public Void visit(Switch s) { s.cond().accept(this); return null; }
+        public Void visit(LabelStmt s) { return null; }
+        public Void visit(Return s) {
+            if (s.expr() != null) s.expr().accept(this);
+            return null;
+        }
+
+        public Void visit(Uni s) { s.expr().accept(this); return null; }
+        public Void visit(Bin s) { s.left().accept(this); s.right().accept(this); return null; }
+        public Void visit(Call s) {
+            s.expr().accept(this);
+            for (Expr a : s.args()) a.accept(this);
+            return null;
+        }
+        public Void visit(Addr s) { visitEntity(s.entity()); return null; }
+        public Void visit(Mem s) { s.expr().accept(this); return null; }
+        public Void visit(Var s) { visitEntity(s.entity()); return null; }
+        public Void visit(Int s) { return null; }
+        public Void visit(Flo s) { return null; }
+        public Void visit(Str s) { return null; }
+    }
 
     // #@@range/newAssemblyCode{
     private AssemblyCode newAssemblyCode() {

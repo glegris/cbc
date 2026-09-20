@@ -255,13 +255,24 @@ public class StandardRuntime {
     // <stdlib.h> malloc()/calloc()/realloc()/free(): a first-fit free-list
     // allocator carved out of the same "mem" array everything else already
     // uses, starting right where the static-data area (globals/string
-    // literals) and, if built, argv end -- see mir_init_heap(), called
-    // once from CodeGenerator's generated main() bridge, right before it
-    // calls into the compiled program's own main(). Unlike glibc's malloc,
-    // this can never grow "mem" past HEAP_SIZE (a real byte[] can't be
-    // resized in place), so running out of heap space returns NULL, same
-    // as any other conforming malloc is allowed to do under real memory
-    // pressure -- there's no separate "heap exhausted" case to handle.
+    // literals) ends -- see mir_init_heap(), called once from
+    // CodeGenerator's generated <clinit>, before a single byte of dynamic
+    // memory (including argv, which is built afterwards, in the generated
+    // main() bridge) has been handed out. This is also the ONE allocator
+    // for every dynamic allocation the JVM backend itself ever needs
+    // internally (a vararg call's marshalled "..." block, a by-value
+    // struct/union copy's scratch buffer, argv's own strings/pointer
+    // array -- see CodeGenerator's "$alloc"/emitAllocHelper, which is
+    // just a thin wrapper around malloc() below) as well as for the
+    // compiled program's own malloc()/calloc()/realloc() calls: there
+    // used to be a second, independent bump pointer for the compiler's
+    // own internal allocations, started from this exact same address,
+    // which could -- and once actually did -- race this one and hand out
+    // overlapping memory. Unlike glibc's malloc, this can never grow
+    // "mem" past HEAP_SIZE (a real byte[] can't be resized in place), so
+    // running out of heap space returns NULL, same as any other
+    // conforming malloc is allowed to do under real memory pressure --
+    // there's no separate "heap exhausted" case to handle.
     //
 
     private static final class Block {
@@ -278,11 +289,10 @@ public class StandardRuntime {
     private final TreeMap<Long, Block> heapBlocks = new TreeMap<Long, Block>();
     private long heapNext = -1;  // -1 until mir_init_heap() runs
 
-    /** Called exactly once, after CodeGenerator's generated main() bridge
-     *  has built argv (if any) but before it calls the compiled program's
-     *  own main() -- start is whatever "$hp" (the pre-existing argv bump
-     *  allocator) ended up at, so malloc's own free store picks up right
-     *  after argv instead of risking overlapping it. */
+    /** Called exactly once, from CodeGenerator's generated <clinit> --
+     *  before anything else in the compiled program/backend has run --
+     *  with start set to right where the static-data area
+     *  (computeStaticLayout's own globals/string-literal layout) ends. */
     public void mir_init_heap(long start) {
         heapNext = start;
         heapBlocks.clear();
