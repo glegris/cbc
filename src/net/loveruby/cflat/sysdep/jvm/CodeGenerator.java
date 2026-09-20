@@ -109,7 +109,6 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
     private static final String MEM_FIELD = "$mem";
     private static final String BUF_FIELD = "$buf";
     private static final String SP_FIELD = "$sp";
-    private static final String STR_METHOD = "$str";
     private static final String NEWSTR_METHOD = "$newstr";
     private static final String ALLOC_METHOD = "$alloc";
     private static final String BUF_DESC = "Ljava/nio/ByteBuffer;";
@@ -124,23 +123,20 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
     // constructed instance of the compiled class itself (built once in
     // emitClinit, over $mem), since every call site that needs to invoke
     // an inherited method is a *static* cflat function with no "this" of
-    // its own -- see compilePutchar/compilePuts/compileNativeCall.
+    // its own -- see compileNativeCall().
     private static final String NATIVE_RUNTIME_CLASS = "NativeRuntime";
     private static final String STANDARD_RUNTIME_CLASS =
             "net/loveruby/cflat/sysdep/jvm/runtime/StandardRuntime";
     private static final String RT_FIELD = "$rt";
 
-    /** Names already implemented in StandardRuntime.java (excluding
-     *  putchar/puts/the printf primitives, which are compile-time
-     *  intrinsics called directly, never through this name-based path
-     *  -- see compileCallInto()), so compileNativeCall() doesn't
-     *  generate a NativeRuntime stub for them. Hardcoded rather than
-     *  found by reflecting over the actual class: this compiler
-     *  shouldn't need that class loaded (or even built yet) just to
-     *  decide what to generate, and a plain list is one line to read
-     *  instead of a Class/Method-based lookup for something that
-     *  changes rarely. Keep this in sync by hand whenever a method is
-     *  added to StandardRuntime. */
+    /** Names already implemented in StandardRuntime.java, so
+     *  compileNativeCall() doesn't generate a NativeRuntime stub for
+     *  them. Hardcoded rather than found by reflecting over the actual
+     *  class: this compiler shouldn't need that class loaded (or even
+     *  built yet) just to decide what to generate, and a plain list is
+     *  one line to read instead of a Class/Method-based lookup for
+     *  something that changes rarely. Keep this in sync by hand
+     *  whenever a method is added to StandardRuntime. */
     private static final Set<String> STANDARD_RUNTIME_FUNCTIONS = new HashSet<String>(Arrays.asList(
             // <ctype.h>
             "isdigit", "isalpha", "isalnum", "isspace", "isupper", "islower",
@@ -168,11 +164,10 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
     private final ErrorHandler errorHandler;
 
     // name -> JVM method descriptor, for every external function called
-    // that isn't a compile-time intrinsic (putchar/puts/printf) and isn't
-    // in STANDARD_RUNTIME_FUNCTIONS -- collected while compiling function
-    // bodies (see compileNativeCall()), then turned into a NativeRuntime
-    // stub for each of them by nativeRuntimeSource(), included in the
-    // JVMAssemblyCode this backend returns.
+    // that isn't already in STANDARD_RUNTIME_FUNCTIONS -- collected while
+    // compiling function bodies (see compileNativeCall()), then turned
+    // into a NativeRuntime stub for each of them by nativeRuntimeSource(),
+    // included in the JVMAssemblyCode this backend returns.
     private final Map<String, String> nativeStubsNeeded = new TreeMap<String, String>();
 
     private String className;
@@ -285,7 +280,6 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
 
         emitConstructor();
         emitAllocHelper();
-        emitStrHelper();
         emitNewstrHelper();
         emitClinit(ir);
 
@@ -413,9 +407,8 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         mv.visitCode();
 
         // The one shared instance of this very class -- extending
-        // NativeRuntime/StandardRuntime -- that every putchar/puts and
-        // extensible-native-call goes through (see
-        // compilePutchar/compilePuts/compileNativeCall), since those are
+        // NativeRuntime/StandardRuntime -- that every extensible-native-
+        // call goes through (see compileNativeCall()), since those are
         // static cflat functions with no "this" of their own to call an
         // inherited method on. Constructing it is
         // also what allocates the simulated address space:
@@ -495,9 +488,9 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
     //
     // Runtime support methods, handwritten in bytecode (there is no
     // cflat source for them): $alloc hands out a fresh, never-colliding
-    // block of simulated memory, $str reads a NUL-terminated C string out
-    // of memory into a Java String, $newstr does the reverse (used to
-    // build argv; see emitMainBridge).
+    // block of simulated memory, $newstr builds a real Java String into
+    // one such block as a NUL-terminated C string (used to build argv;
+    // see emitMainBridge).
     //
 
     /** $alloc(size) used to be its own tiny independent bump allocator
@@ -523,52 +516,6 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         mv.visitVarInsn(LLOAD, 0);
         mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_RUNTIME_CLASS, "malloc", "(J)J", false);
         mv.visitInsn(LRETURN);
-        mv.visitMaxs(0, 0);
-        mv.visitEnd();
-    }
-
-    private void emitStrHelper() {
-        MethodVisitor mv = cw.visitMethod(ACC_PRIVATE | ACC_STATIC, STR_METHOD,
-                "(J)Ljava/lang/String;", null, null);
-        mv.visitCode();
-        // slots: addr0=0,1 (long param); addr=2; end=3; bytes=4
-        org.objectweb.asm.Label loopStart = new org.objectweb.asm.Label();
-        org.objectweb.asm.Label loopEnd = new org.objectweb.asm.Label();
-        mv.visitVarInsn(LLOAD, 0);
-        mv.visitInsn(L2I);
-        mv.visitVarInsn(ISTORE, 2);
-        mv.visitVarInsn(ILOAD, 2);
-        mv.visitVarInsn(ISTORE, 3);
-        mv.visitLabel(loopStart);
-        mv.visitFieldInsn(GETSTATIC, className, MEM_FIELD, "[B");
-        mv.visitVarInsn(ILOAD, 3);
-        mv.visitInsn(BALOAD);
-        mv.visitJumpInsn(IFEQ, loopEnd);
-        mv.visitIincInsn(3, 1);
-        mv.visitJumpInsn(GOTO, loopStart);
-        mv.visitLabel(loopEnd);
-        mv.visitVarInsn(ILOAD, 3);
-        mv.visitVarInsn(ILOAD, 2);
-        mv.visitInsn(ISUB);
-        mv.visitIntInsn(NEWARRAY, T_BYTE);
-        mv.visitVarInsn(ASTORE, 4);
-        mv.visitFieldInsn(GETSTATIC, className, MEM_FIELD, "[B");
-        mv.visitVarInsn(ILOAD, 2);
-        mv.visitVarInsn(ALOAD, 4);
-        mv.visitInsn(ICONST_0);
-        mv.visitVarInsn(ILOAD, 3);
-        mv.visitVarInsn(ILOAD, 2);
-        mv.visitInsn(ISUB);
-        mv.visitMethodInsn(INVOKESTATIC, "java/lang/System", "arraycopy",
-                "(Ljava/lang/Object;ILjava/lang/Object;II)V", false);
-        mv.visitTypeInsn(NEW, "java/lang/String");
-        mv.visitInsn(DUP);
-        mv.visitVarInsn(ALOAD, 4);
-        mv.visitFieldInsn(GETSTATIC, "java/nio/charset/StandardCharsets", "UTF_8",
-                "Ljava/nio/charset/Charset;");
-        mv.visitMethodInsn(INVOKESPECIAL, "java/lang/String", "<init>",
-                "([BLjava/nio/charset/Charset;)V", false);
-        mv.visitInsn(ARETURN);
         mv.visitMaxs(0, 0);
         mv.visitEnd();
     }
@@ -2163,11 +2110,6 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
 
         private boolean callIsVoid(Call call) {
             if (call.isStaticCall()) {
-                // putchar/puts are both declared to return int in
-                // stdio.h, so the generic isVoid() check below already
-                // says "not void" for them; compilePutchar/compilePuts
-                // always leave a (possibly dummy) int on the stack to
-                // match.
                 return call.function().isVoid();
             }
             net.loveruby.cflat.type.FunctionType ft = indirectCallSignature(call);
@@ -2191,14 +2133,6 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             Function f = node.function();
             if (f instanceof UndefinedFunction) {
                 String name = f.name();
-                if (name.equals("putchar") && node.args().size() == 1) {
-                    compilePutchar(node);
-                    return;
-                }
-                if (name.equals("puts") && node.args().size() == 1) {
-                    compilePuts(node);
-                    return;
-                }
                 if (name.equals("va_init") && node.args().size() == 1) {
                     compileVaInit(node);
                     return;
@@ -2439,38 +2373,11 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             }
         }
 
-        /** Compiles a char* expression and leaves a real Java String
-         *  (read from $mem at run time) on the stack. */
-        private void compileCString(Expr arg) {
-            compile(arg);
-            if (!isWide(arg.type())) {
-                mv.visitInsn(I2L);
-            }
-            mv.visitMethodInsn(INVOKESTATIC, className, STR_METHOD,
-                    "(J)Ljava/lang/String;", false);
-        }
-
         /** Pushes the shared instance held in RT_FIELD (see emitClinit)
          *  as the receiver for one of the INVOKEVIRTUAL calls below --
          *  always the first thing pushed, before any argument. */
         private void pushRuntime() {
             mv.visitFieldInsn(GETSTATIC, className, RT_FIELD, runtimeDesc());
-        }
-
-        private void compilePutchar(Call node) {
-            pushRuntime();
-            Expr arg = node.args().get(0);
-            compile(arg);
-            coerceToInt(resultWidth(arg));
-            mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_RUNTIME_CLASS,
-                    "putchar", "(I)I", false);
-        }
-
-        private void compilePuts(Call node) {
-            pushRuntime();
-            compileCString(node.args().get(0));
-            mv.visitMethodInsn(INVOKEVIRTUAL, STANDARD_RUNTIME_CLASS,
-                    "puts", "(Ljava/lang/String;)I", false);
         }
 
         public Void visit(Addr node) {

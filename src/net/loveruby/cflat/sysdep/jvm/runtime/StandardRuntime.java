@@ -76,25 +76,6 @@ public class StandardRuntime {
     }
 
     //
-    // putchar/puts's own building blocks -- called directly by
-    // CodeGenerator (see compilePutchar/compilePuts), not through the
-    // generic extern-call mechanism.
-    //
-
-    public int putchar(int c) {
-        System.out.write(c);
-        return c;
-    }
-
-    public int puts(String s) {
-        System.out.println(s);
-        // Real libc puts() returns a non-negative count or EOF; tracking
-        // the real count isn't worth it here, so always report success
-        // (0) for whatever, rare, code actually looks at the result.
-        return 0;
-    }
-
-    //
     // <ctype.h> -- pure functions, "mem" unused.
     //
 
