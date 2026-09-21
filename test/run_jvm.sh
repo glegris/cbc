@@ -346,6 +346,12 @@ run_case bare-prototype "5;"
 # tests -- see funcptr-c-syntax.c ---
 run_case funcptr-c-syntax "5;3;8;"
 
+# --- a flexible array member ("int data[];", a struct's last member,
+# C99 6.7.2.1p18) used to silently inflate sizeof(struct) by a whole
+# pointer's worth of bytes it never actually reserves, instead of
+# contributing nothing -- see flexible-array-member.c ---
+run_case flexible-array-member "4;5;100;8;"
+
 echo
 echo "pass=$pass known-diff=$known fail=$fail"
 rm -rf "$SCRATCH"

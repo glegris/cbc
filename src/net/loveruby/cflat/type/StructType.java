@@ -19,10 +19,35 @@ public class StructType extends CompositeType {
     protected void computeOffsets() {
         long offset = 0;
         long maxAlign = 1;
-        for (Slot s : members()) {
-            offset = AsmUtils.align(offset, s.allocSize());
-            s.setOffset(offset);
-            offset += s.allocSize();
+        int lastIndex = members().size() - 1;
+        for (int i = 0; i < members().size(); i++) {
+            Slot s = members().get(i);
+            // C99 6.7.2.1p18's "flexible array member": an incomplete
+            // array ("int data[];", no size at all) as a struct's very
+            // last member contributes *nothing* to the struct's own
+            // size -- it's a placeholder for however many elements a
+            // caller allocates room for past the struct itself (e.g.
+            // "malloc(sizeof(struct S) + n * sizeof(int))"), not a
+            // real, sized member -- though the struct must still be
+            // laid out so this member itself starts at an address
+            // properly aligned for its own element type. Without this,
+            // allocSize() fell back to ArrayType's own decayed-to-
+            // pointer size (meant for an array *parameter*, not a
+            // struct member) for any incomplete array, silently
+            // inflating the struct's sizeof by a whole pointer's worth
+            // of bytes it never actually reserves.
+            boolean isFlexibleArrayMember = (i == lastIndex)
+                    && s.type().isArray()
+                    && ! s.type().getArrayType().isAllocatedArray();
+            if (isFlexibleArrayMember) {
+                offset = AsmUtils.align(offset, s.alignment());
+                s.setOffset(offset);
+            }
+            else {
+                offset = AsmUtils.align(offset, s.allocSize());
+                s.setOffset(offset);
+                offset += s.allocSize();
+            }
             maxAlign = Math.max(maxAlign, s.alignment());
         }
         cachedSize = AsmUtils.align(offset, maxAlign);
