@@ -320,6 +320,13 @@ run_case enum-trailing-comma "0;1;2;1;"
 # array-size-inference.c ---
 run_case array-size-inference "4;5;4;55;3;16;0;20;"
 
+# --- C89's "tentative definition" (several file-scope declarations of
+# the same variable with no initializer -- or with only one of them
+# ever supplying one -- refer to the same variable, not a "duplicated
+# definition" error), found via the c-testsuite project's own tests --
+# see tentative-definition.c ---
+run_case tentative-definition "3;0;"
+
 echo
 echo "pass=$pass known-diff=$known fail=$fail"
 rm -rf "$SCRATCH"

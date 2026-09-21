@@ -1,5 +1,6 @@
 package net.loveruby.cflat.ast;
 import net.loveruby.cflat.entity.*;
+import net.loveruby.cflat.exception.SemanticError;
 import java.util.*;
 
 public class Declarations {
@@ -22,12 +23,50 @@ public class Declarations {
         typedefs.addAll(decls.typedefs);
     }
 
+    // C89's "tentative definition": several file-scope declarations of
+    // the same variable with no initializer -- or with only one of them
+    // ever supplying one -- all refer to the *same* variable (this used
+    // to let a variable declared "int x;" in a header, #included into
+    // several translation units, avoid a link error; here, with headers
+    // spliced into one flat token stream, the case that actually shows
+    // up is the same name declared more than once in one file, e.g.
+    // across taken/untaken "#ifdef" branches). Only two declarations
+    // that *both* supply an initializer are a genuine conflict.
     public void addDefvar(DefinedVariable var) {
-        defvars.add(var);
+        DefinedVariable existing = findDefvar(var.name());
+        if (existing == null) {
+            defvars.add(var);
+            return;
+        }
+        if (existing.hasInitializer() && var.hasInitializer()) {
+            throw new SemanticError("duplicated definition: " + var.name()
+                    + ": " + existing.location() + " and " + var.location());
+        }
+        if (var.hasInitializer()) {
+            // This declaration supplies the initializer the earlier,
+            // tentative one(s) never did -- it becomes the one real
+            // definition.
+            defvars.remove(existing);
+            defvars.add(var);
+        }
+        // else: "existing" (whichever of the two actually has the
+        // initializer, if either does) already covers it -- this
+        // declaration is just another tentative re-declaration.
     }
 
     public void addDefvars(List<DefinedVariable> vars) {
-        defvars.addAll(vars);
+        for (DefinedVariable var : vars) {
+            addDefvar(var);
+        }
+    }
+
+    private DefinedVariable findDefvar(String name) {
+        for (DefinedVariable var : defvars) {
+            if (var.name().equals(name)) {
+                return var;
+            }
+        }
+        return null;
     }
 
     public List<DefinedVariable> defvars() {
