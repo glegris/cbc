@@ -89,15 +89,17 @@ public interface ParserConstants {
   /** RegularExpression Id. */
   int INTSUFFIX = 41;
   /** RegularExpression Id. */
-  int FLOATLIT = 42;
+  int LSUFFIX = 42;
   /** RegularExpression Id. */
-  int EXPONENT = 43;
+  int FLOATLIT = 43;
   /** RegularExpression Id. */
-  int HEXEXPONENT = 44;
+  int EXPONENT = 44;
   /** RegularExpression Id. */
-  int CHARACTER = 49;
+  int HEXEXPONENT = 45;
   /** RegularExpression Id. */
-  int STRING = 54;
+  int CHARACTER = 50;
+  /** RegularExpression Id. */
+  int STRING = 55;
 
   /** Lexical state. */
   int DEFAULT = 0;
@@ -154,18 +156,19 @@ public interface ParserConstants {
     "<IDENTIFIER>",
     "<INTEGER>",
     "<INTSUFFIX>",
+    "<LSUFFIX>",
     "<FLOATLIT>",
     "<EXPONENT>",
     "<HEXEXPONENT>",
     "\"\\\'\"",
-    "<token of kind 46>",
     "<token of kind 47>",
     "<token of kind 48>",
+    "<token of kind 49>",
     "\"\\\'\"",
     "\"\\\"\"",
-    "<token of kind 51>",
     "<token of kind 52>",
     "<token of kind 53>",
+    "<token of kind 54>",
     "\"\\\"\"",
     "\"(\"",
     "\"=\"",

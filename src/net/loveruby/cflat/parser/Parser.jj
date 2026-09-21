@@ -111,17 +111,78 @@ public class Parser {
     // #@@range/newReader{
     private IntegerLiteralNode integerNode(Location loc, String image) {
         long i = integerValue(image);
-        if (image.endsWith("UL")) {
+        String upper = image.toUpperCase();
+        int suffixStart = upper.length();
+        while (suffixStart > 0 &&
+                (upper.charAt(suffixStart - 1) == 'U'
+                        || upper.charAt(suffixStart - 1) == 'L')) {
+            suffixStart--;
+        }
+        String suffix = upper.substring(suffixStart);
+        boolean unsigned = suffix.indexOf('U') >= 0;
+        int lCount = 0;
+        for (int idx = 0; idx < suffix.length(); idx++) {
+            if (suffix.charAt(idx) == 'L') lCount++;
+        }
+        if (unsigned && lCount >= 2) {
+            return new IntegerLiteralNode(loc, IntegerTypeRef.ulonglongRef(), i);
+        }
+        else if (unsigned && lCount == 1) {
             return new IntegerLiteralNode(loc, IntegerTypeRef.ulongRef(), i);
         }
-        else if (image.endsWith("L")) {
-            return new IntegerLiteralNode(loc, IntegerTypeRef.longRef(), i);
-        }
-        else if (image.endsWith("U")) {
+        else if (unsigned) {
             return new IntegerLiteralNode(loc, IntegerTypeRef.uintRef(), i);
         }
+        else if (lCount >= 2) {
+            return new IntegerLiteralNode(loc, IntegerTypeRef.longlongRef(), i);
+        }
+        else if (lCount == 1) {
+            return new IntegerLiteralNode(loc, IntegerTypeRef.longRef(), i);
+        }
         else {
-            return new IntegerLiteralNode(loc, IntegerTypeRef.intRef(), i);
+            return integerNodeWithoutSuffix(loc, image, i);
+        }
+    }
+
+    // C99 6.4.4.1's own value-based fallback table for a suffix-less
+    // integer constant: decimal tries int then long long (no unsigned
+    // fallback for decimal); octal/hex try int, unsigned int, long long,
+    // then unsigned long long. "long" itself is deliberately skipped in
+    // both chains -- its width is platform-dependent (4 bytes on
+    // ilp32/llp64, 8 on lp64/ilp64; see TypeTable) and the parser runs
+    // before any target is picked, whereas "int" (always 4 bytes) and
+    // "long long" (always >=64 bits) are fixed-width on every profile
+    // this compiler supports, so only those can be chosen safely here --
+    // this never picks a type too narrow for the literal's value, only
+    // possibly wider than strict C99 would on an LP64-like target.
+    private IntegerLiteralNode integerNodeWithoutSuffix(
+            Location loc, String image, long i) {
+        boolean isHexOrOctal = image.startsWith("0x") || image.startsWith("0X")
+                || (image.startsWith("0") && !image.equals("0"));
+        if (isHexOrOctal) {
+            if (i >= 0 && i <= 0x7fffffffL) {
+                return new IntegerLiteralNode(loc, IntegerTypeRef.intRef(), i);
+            }
+            else if (i >= 0 && i <= 0xffffffffL) {
+                return new IntegerLiteralNode(loc, IntegerTypeRef.uintRef(), i);
+            }
+            else if (i >= 0) {
+                return new IntegerLiteralNode(loc, IntegerTypeRef.longlongRef(), i);
+            }
+            else {
+                return new IntegerLiteralNode(loc, IntegerTypeRef.ulonglongRef(), i);
+            }
+        }
+        else {
+            if (i >= 0 && i <= 0x7fffffffL) {
+                return new IntegerLiteralNode(loc, IntegerTypeRef.intRef(), i);
+            }
+            else {
+                // integerValue() parses decimal with a signed parseLong,
+                // so a successfully-parsed "i" here is always within
+                // long long's (== Java long's) own signed range already.
+                return new IntegerLiteralNode(loc, IntegerTypeRef.longlongRef(), i);
+            }
         }
     }
     // #@@}
@@ -198,12 +259,29 @@ public class Parser {
 
     // #@@range/integerValue{
     private long integerValue(String image) {
-        String s = image.replaceFirst("[UL]+", "");
+        // Case-insensitive and anchored to the end: a lowercase suffix
+        // ("100ul") must strip just as cleanly as an uppercase one, and
+        // anchoring avoids ever touching a hex digit before it (hex
+        // digits are 0-9a-fA-F, which never includes 'u'/'l', but being
+        // explicit here costs nothing).
+        String s = image.replaceFirst("(?i)[ul]+$", "");
         if (s.startsWith("0x") || s.startsWith("0X")) {
-            return Long.parseLong(s.substring(2), 16);
+            // A hex constant (unlike a decimal one -- C99 6.4.4.1p5's
+            // own table) is allowed to pick an unsigned type when it
+            // doesn't fit a signed one, so e.g. "0xffffffffffffffff"
+            // (ULLONG_MAX, a common all-ones bit pattern/bitmask) is a
+            // perfectly valid literal, not an overflow -- parseUnsignedLong
+            // parses the full 64-bit range and hands back its raw bit
+            // pattern (cbc's own internal "long" is just a bit pattern;
+            // signedness is tracked separately, by the surrounding
+            // Type), where plain parseLong would throw
+            // NumberFormatException for anything past 0x7fffffffffffffff.
+            return Long.parseUnsignedLong(s.substring(2), 16);
         }
         else if (s.startsWith("0") && !s.equals("0")) {
-            return Long.parseLong(s.substring(1), 8);
+            // Same reasoning as hex above -- an octal constant gets the
+            // same unsigned-fallback treatment in C99's own table.
+            return Long.parseUnsignedLong(s.substring(1), 8);
         }
         else {
             return Long.parseLong(s, 10);
@@ -549,7 +627,17 @@ TOKEN: {
     // "U", matching real C99 ("100ULL", "100LLU", "100UL" and "100LU"
     // are all valid). integerValue()'s "[UL]+" strip already handles
     // whatever combination this matches, unchanged.
-    | <#INTSUFFIX: ("U" (["L"]){0,2}) | ((["L"]){1,2} ("U")?)>
+    //
+    // Lowercase suffixes ("100ul", "5l", "7u", "100ull") are just as
+    // idiomatic in real C as uppercase ones and must lex as *part of*
+    // the integer literal, not as a separate (bogus) identifier token
+    // right after it -- so "U"/"L" each need a lowercase alternative.
+    // Per C99 6.4.4.1, "u"/"U" is chosen independently of the "l"/"L"
+    // part, but a two-character "long long" suffix must use one case
+    // consistently ("ll" or "LL", never "lL"/"Ll") -- <#LSUFFIX> below
+    // captures exactly that.
+    | <#INTSUFFIX: (["U","u"] (<LSUFFIX>)?) | (<LSUFFIX> (["U","u"])?)>
+    | <#LSUFFIX: "LL" | "L" | "ll" | "l">
 }
 // #@@}
 
@@ -1142,31 +1230,26 @@ ParamTypeRefs fixedparam_typerefs():
 // #@@}
 
 // #@@range/typeref_base{
+// C99 6.7.2's integer type specifiers can combine "signed"/"unsigned"
+// with "char"/"short"/"int"/"long"/"long long" and an optional trailing
+// "int" in several equivalent ways (e.g. "long", "long int", "signed
+// long", "signed long int" are all the exact same type) -- each of the
+// three blocks below (bare, "signed"-prefixed, "unsigned"-prefixed)
+// enumerates that same base-keyword shape explicitly, matching the
+// style of the original (smaller) UNSIGNED-only version of this
+// production, rather than factoring the shared shape into its own
+// production (which would need to smuggle the matched base keyword,
+// and "long" vs "long long"'s own distinction, back out through some
+// side channel instead of a plain return value).
 TypeRef typeref_base():
 {
     Token t, name;
 }
 {
       t=<VOID>          { return new VoidTypeRef(location(t)); }
-    | t=<CHAR>          { return IntegerTypeRef.charRef(location(t)); }
-    | t=<SHORT>         { return IntegerTypeRef.shortRef(location(t)); }
-    | t=<INT>           { return IntegerTypeRef.intRef(location(t)); }
-    | LOOKAHEAD(2) t=<LONG> <LONG>
-        { return IntegerTypeRef.longlongRef(location(t)); }
-    | t=<LONG>          { return IntegerTypeRef.longRef(location(t)); }
     | t=<FLOAT>         { return FloatTypeRef.floatRef(location(t)); }
     | t=<DOUBLE>        { return FloatTypeRef.doubleRef(location(t)); }
     | t=<BOOL_>         { return IntegerTypeRef.boolRef(location(t)); }
-    | LOOKAHEAD(2) t=<UNSIGNED> <CHAR>
-        { return IntegerTypeRef.ucharRef(location(t)); }
-    | LOOKAHEAD(2) t=<UNSIGNED> <SHORT>
-        { return IntegerTypeRef.ushortRef(location(t)); }
-    | LOOKAHEAD(2) t=<UNSIGNED> <INT>
-        { return IntegerTypeRef.uintRef(location(t)); }
-    | LOOKAHEAD(3) t=<UNSIGNED> <LONG> <LONG>
-        { return IntegerTypeRef.ulonglongRef(location(t)); }
-    | t=<UNSIGNED> <LONG>
-        { return IntegerTypeRef.ulongRef(location(t)); }
     | t=<STRUCT> name=<IDENTIFIER>
         { return new StructTypeRef(location(t), name.image); }
     | t=<UNION> name=<IDENTIFIER>
@@ -1175,6 +1258,60 @@ TypeRef typeref_base():
         { return new UserTypeRef(location(t), name.image); }
     | LOOKAHEAD({isType(getToken(1).image)}) name=<IDENTIFIER>
         { return new UserTypeRef(location(name), name.image); }
+    // "signed ..." -- "signed" alone means plain "int"; "signed char"
+    // is (unlike bare "char") *guaranteed* signed, which is already
+    // how this compiler's own plain "char" behaves (see TypeTable), so
+    // both map to the same charRef().
+    | LOOKAHEAD(2) t=<SIGNED> <CHAR>
+        { return IntegerTypeRef.charRef(location(t)); }
+    | LOOKAHEAD(3) t=<SIGNED> <SHORT> <INT>
+        { return IntegerTypeRef.shortRef(location(t)); }
+    | LOOKAHEAD(2) t=<SIGNED> <SHORT>
+        { return IntegerTypeRef.shortRef(location(t)); }
+    | LOOKAHEAD(4) t=<SIGNED> <LONG> <LONG> <INT>
+        { return IntegerTypeRef.longlongRef(location(t)); }
+    | LOOKAHEAD(3) t=<SIGNED> <LONG> <LONG>
+        { return IntegerTypeRef.longlongRef(location(t)); }
+    | LOOKAHEAD(3) t=<SIGNED> <LONG> <INT>
+        { return IntegerTypeRef.longRef(location(t)); }
+    | LOOKAHEAD(2) t=<SIGNED> <LONG>
+        { return IntegerTypeRef.longRef(location(t)); }
+    | LOOKAHEAD(2) t=<SIGNED> <INT>
+        { return IntegerTypeRef.intRef(location(t)); }
+    | t=<SIGNED>
+        { return IntegerTypeRef.intRef(location(t)); }
+    // "unsigned ..." -- bare "unsigned" alone means "unsigned int".
+    | LOOKAHEAD(2) t=<UNSIGNED> <CHAR>
+        { return IntegerTypeRef.ucharRef(location(t)); }
+    | LOOKAHEAD(3) t=<UNSIGNED> <SHORT> <INT>
+        { return IntegerTypeRef.ushortRef(location(t)); }
+    | LOOKAHEAD(2) t=<UNSIGNED> <SHORT>
+        { return IntegerTypeRef.ushortRef(location(t)); }
+    | LOOKAHEAD(4) t=<UNSIGNED> <LONG> <LONG> <INT>
+        { return IntegerTypeRef.ulonglongRef(location(t)); }
+    | LOOKAHEAD(3) t=<UNSIGNED> <LONG> <LONG>
+        { return IntegerTypeRef.ulonglongRef(location(t)); }
+    | LOOKAHEAD(3) t=<UNSIGNED> <LONG> <INT>
+        { return IntegerTypeRef.ulongRef(location(t)); }
+    | LOOKAHEAD(2) t=<UNSIGNED> <LONG>
+        { return IntegerTypeRef.ulongRef(location(t)); }
+    | LOOKAHEAD(2) t=<UNSIGNED> <INT>
+        { return IntegerTypeRef.uintRef(location(t)); }
+    | t=<UNSIGNED>
+        { return IntegerTypeRef.uintRef(location(t)); }
+    // No "signed"/"unsigned" prefix at all.
+    | t=<CHAR>          { return IntegerTypeRef.charRef(location(t)); }
+    | LOOKAHEAD(2) t=<SHORT> <INT>
+        { return IntegerTypeRef.shortRef(location(t)); }
+    | t=<SHORT>         { return IntegerTypeRef.shortRef(location(t)); }
+    | LOOKAHEAD(3) t=<LONG> <LONG> <INT>
+        { return IntegerTypeRef.longlongRef(location(t)); }
+    | LOOKAHEAD(2) t=<LONG> <LONG>
+        { return IntegerTypeRef.longlongRef(location(t)); }
+    | LOOKAHEAD(2) t=<LONG> <INT>
+        { return IntegerTypeRef.longRef(location(t)); }
+    | t=<LONG>          { return IntegerTypeRef.longRef(location(t)); }
+    | t=<INT>           { return IntegerTypeRef.intRef(location(t)); }
 }
 // #@@}
 
@@ -1213,9 +1350,23 @@ StmtNode stmt():
 {
     StmtNode n = null;
     ExprNode e = null;
+    Token t;
 }
 {
-    ( ";"
+    ( t=";"
+        {
+            // A bare "；" -- C's own "empty statement", extremely
+            // common as a for/while/do-while loop's whole body (e.g.
+            // "for (...) ;") or just a stray semicolon -- used to
+            // leave "n" as null instead of returning an actual node,
+            // crashing the very first visitor to walk this statement
+            // (Cannot invoke "StmtNode.accept" because "<parameter1>"
+            // is null) the moment one was ever reached. An empty
+            // block has exactly the right semantics (does nothing)
+            // and is already handled correctly everywhere a block is.
+            n = new BlockNode(location(t), new ArrayList<DefinedVariable>(),
+                    new ArrayList<StmtNode>());
+        }
     | LOOKAHEAD(2) n=labeled_stmt()
     | e=expr() ";" { n = new ExprStmtNode(e.location(), e); }
     | n=block()

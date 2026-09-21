@@ -274,6 +274,28 @@ run_case unary-promotion "1;1;1;1;"
 # the c-testsuite project's own tests -- see sizeof-not.c ---
 run_case sizeof-not "1;4;4;"
 
+# --- a bare ";" (e.g. a whole for/do-while loop body) used to crash
+# the first AST visitor to reach it instead of doing nothing, found
+# via the c-testsuite project's own tests -- see empty-stmt.c ---
+run_case empty-stmt "5;5;"
+
+# --- hex/octal literal overflow crashed instead of using C99's own
+# unsigned fallback, and a suffix-less literal was always typed plain
+# "int" regardless of its value, found via the c-testsuite project's
+# own tests -- see int-literal-overflow.c ---
+run_case int-literal-overflow "4294967295;18446744073709551615;1;1;"
+
+# --- lowercase/mixed-case integer suffixes ("100ul", "5ll", ...)
+# failed to lex as part of the literal at all, found via the
+# c-testsuite project's own tests -- see int-suffix-case.c ---
+run_case int-suffix-case "100;5;7;100;5;100;"
+
+# --- several standard C99 integer type-specifier combinations (bare
+# "signed"/"unsigned", "signed char", "long int", "unsigned short
+# int", ...) had no grammar production at all, found via the
+# c-testsuite project's own tests -- see type-specifiers.c ---
+run_case type-specifiers "-1;1;-2;100000;30000;4000000000;60000;100;-100;"
+
 echo
 echo "pass=$pass known-diff=$known fail=$fail"
 rm -rf "$SCRATCH"
