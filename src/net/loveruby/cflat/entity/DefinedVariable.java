@@ -41,6 +41,17 @@ public class DefinedVariable extends Variable {
         return (sequence < 0) ? name : (name + "." + sequence);
     }
 
+    /** Rebinds this variable's own type -- used only by TypeChecker to
+     *  resolve "T x[] = {...};"'s incomplete array type into a real,
+     *  sized one once the initializer's own element count is known
+     *  (TypeResolver, which runs first, has no such count to work with
+     *  yet). The replacement TypeNode must already carry a *resolved*
+     *  Type (built via TypeNode's Type constructor, not its TypeRef
+     *  one) since nothing will resolve it again. */
+    public void setTypeNode(TypeNode t) {
+        this.typeNode = t;
+    }
+
     public boolean hasInitializer() {
         return (initializer != null);
     }

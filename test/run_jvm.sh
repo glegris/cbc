@@ -314,6 +314,12 @@ run_case multi-declarator "5;10;4;1;1;1;"
 # enum-trailing-comma.c ---
 run_case enum-trailing-comma "0;1;2;1;"
 
+# --- "T x[] = {...};" must infer the array's length from its
+# initializer (C99 6.7.8p22) instead of being rejected outright, found
+# via the c-testsuite project's own tests -- see
+# array-size-inference.c ---
+run_case array-size-inference "4;5;4;55;3;16;0;20;"
+
 echo
 echo "pass=$pass known-diff=$known fail=$fail"
 rm -rf "$SCRATCH"

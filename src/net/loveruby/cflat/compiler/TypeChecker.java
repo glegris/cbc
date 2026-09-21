@@ -74,6 +74,19 @@ class TypeChecker extends Visitor {
     }
 
     private void checkVariable(DefinedVariable var) {
+        if (var.type().isArray() && !var.type().getArrayType().isAllocatedArray()
+                && var.hasInitializer()
+                && var.initializer() instanceof AggregateLiteralNode) {
+            // "T x[] = {...};" -- the array's own length was left
+            // unspecified, to be taken from however many elements (or
+            // however high an index designator reaches) the
+            // initializer itself has; TypeResolver has already bound
+            // the variable to the *incomplete* array type by the time
+            // this runs (it never looks at the initializer), so this
+            // is the first point that can compute the real length and
+            // rebind the variable to a properly sized array type.
+            resolveIncompleteArrayLength(var, (AggregateLiteralNode) var.initializer());
+        }
         if (isInvalidVariableType(var.type())) {
             error(var.location(), "invalid variable type");
             return;
@@ -112,6 +125,33 @@ class TypeChecker extends Visitor {
         }
     }
 
+    /** Resolves "T x[] = {...};"'s incomplete top-level array type into
+     *  a properly sized one, using the exact same position rules
+     *  (positional elements plus "[index]" designators, see
+     *  AggregateLiteralNode#resolvePositions) checkAggregateLiteral
+     *  itself will use right afterward to actually validate/cast each
+     *  element -- the array's length is one past the highest position
+     *  any element ends up at (bare positional elements only, plainly,
+     *  the element count; a "[N] = ..." designator can still stretch
+     *  it further, same as C99 allows). A nested array-of-arrays
+     *  (e.g. a struct member) is deliberately not handled here: only a
+     *  variable's own *top-level* declared type can ever be
+     *  incomplete-and-unwrapped, since a nested member/element type is
+     *  always folded into fully-resolved TypeRefs well before this
+     *  point (var.type() below is exactly that top-level type). */
+    private void resolveIncompleteArrayLength(DefinedVariable var, AggregateLiteralNode lit) {
+        ArrayType at = var.type().getArrayType();
+        List<Integer> positions = lit.resolvePositions(null);
+        long length = 0;
+        for (int pos : positions) {
+            if (pos + 1 > length) {
+                length = pos + 1;
+            }
+        }
+        var.setTypeNode(new TypeNode(
+                (Type) new ArrayType(at.baseType(), length, at.size())));
+    }
+
     /** Checks a brace initializer ("{ e0, e1, ... }") against the type it
      *  is initializing, casting each leaf element in place (mutating the
      *  AggregateLiteralNode's own element list) the same way a plain
@@ -119,10 +159,12 @@ class TypeChecker extends Visitor {
      *  nested brace list (a struct/array member that is itself an
      *  array/struct/union).
      *
-     *  Scope note: the target array must have an explicit length --
-     *  inferring it from the initializer list's size (like C's "int
-     *  a[] = {1,2,3};") isn't supported, since by the time TypeChecker
-     *  runs, TypeResolver has already bound the variable's type and
+     *  Scope note: only a *variable's own top-level* array can have its
+     *  length inferred this way (see resolveIncompleteArrayLength,
+     *  called from checkVariable before this ever runs) -- a nested
+     *  array (a struct member, or an inner dimension like "T a[][3]")
+     *  must still have an explicit length, since by the time this
+     *  method walks into it, TypeResolver has already bound it and
      *  there is no clean way to go back and resize it.
      *
      *  A ".member"/"[index]" designator (see AggregateLiteralNode) sets
