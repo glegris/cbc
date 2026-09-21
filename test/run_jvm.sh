@@ -334,6 +334,12 @@ run_case tentative-definition "3;0;"
 # see anonymous-struct.c ---
 run_case anonymous-struct "6;3;3;42;5;6;"
 
+# --- a bare, non-"extern" top-level function prototype ("int f(char
+# *);", a header's usual content) and its own optional parameter names
+# had no grammar support, found via the c-testsuite project's own
+# tests -- see bare-prototype.c ---
+run_case bare-prototype "5;"
+
 echo
 echo "pass=$pass known-diff=$known fail=$fail"
 rm -rf "$SCRATCH"

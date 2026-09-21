@@ -321,6 +321,17 @@ public class Parser {
     }
     // #@@}
 
+    // #@@range/anonymousParamName{
+    private int anonParamSeq = 0;
+
+    private String anonymousParamName() {
+        // Same reasoning as anonymousTagName() -- "$" can't appear in a
+        // real identifier, and there's no body for this name to ever
+        // actually be referenced (or clash) in anyway.
+        return "$anon_param" + (anonParamSeq++);
+    }
+    // #@@}
+
     // #@@range/declaratorType{
     // One declarator's own final type in a "T d1, d2, ...;" list: its
     // own array dims (if any -- see withArrayDims()) applied first,
@@ -764,24 +775,20 @@ AST compilation_unit():
 // A "#include"d header (already spliced in as plain text by the
 // preprocessor, long before this ever runs) and the file that included
 // it are parsed as one single, flat token stream, so this has to accept
-// both real definitions (defun/defvars/...) *and* bare declarations
-// (funcdecl/vardecl -- "extern int f(int);"/"extern int x;", a header's
-// usual content) in the same repetition: there's no separate grammar
-// entry point for "declarations only" the way a once-existed "import"
-// system needed. funcdecl/vardecl are only ever reached when the next
-// token is "extern" (storage() -- used by defun() -- never accepts it),
-// so there's no real ambiguity to resolve beyond the lookahead already
-// needed to tell "extern int f(int);" (a declaration) from
-// "extern int f(int x)" followed by "{" (a definition), which this
-// compiler has never actually supported (matching real C's own
-// "extern" storage class on a function *definition* being legal but
-// rare); the token immediately following the "extern" declaration
-// forms determines which of the two it is far enough ahead for a plain
-// LOOKAHEAD.
+// both real definitions (funcDefOrDecl/defvars/...) *and* bare
+// declarations (funcDefOrDecl/vardecl -- "int strlen(char *);"/"extern
+// int x;", a header's usual content) in the same repetition: there's
+// no separate grammar entry point for "declarations only" the way a
+// once-existed "import" system needed. vardecl() is only ever reached
+// when the next token is "extern" (storage() -- used by
+// funcDefOrDecl() -- never accepts it), so telling it apart from
+// defvars() is a plain LOOKAHEAD(1); a function (with or without a
+// leading "extern") is resolved into a definition or a bare
+// declaration *inside* funcDefOrDecl() itself/funcdecl() -- see their
+// own comments for why that never needs to look past the opening "(".
 Declarations top_defs():
 {
     Declarations decls = new Declarations();
-    DefinedFunction defun;
     List<DefinedVariable> defvars;
     UndefinedFunction funcdecl;
     UndefinedVariable vardecl;
@@ -794,7 +801,7 @@ Declarations top_defs():
 {
         { topDecls = decls; }
     ( LOOKAHEAD(storage() typeref() <IDENTIFIER> "(")
-      defun=defun()         { decls.addDefun(defun); }
+      funcDefOrDecl(decls)
     | LOOKAHEAD(<EXTERN> [<INLINE>] typeref() <IDENTIFIER> "(")
       funcdecl=funcdecl()   { decls.addFuncdecl(funcdecl); }
     | LOOKAHEAD(<EXTERN>)
@@ -962,7 +969,21 @@ Constant defconst():
 // #@@}
 
 // #@@range/defun{
-DefinedFunction defun():
+// A function definition ("T f(...) { ... }") and a bare, non-"extern"
+// prototype declaration ("T f(...);", e.g. "int strlen(char *);", a
+// header's usual content for a function it doesn't itself define)
+// share the identical "storage() typeref() name() (params)" prefix,
+// diverging only at the very next token (a real "{" body vs. a plain
+// ";"). Parsing that shared prefix here exactly once and branching on
+// that one trailing token -- rather than two separate productions each
+// guarded by its own long LOOKAHEAD trying to predict which one is
+// coming -- avoids needing any lookahead at all past the "(": this
+// production is only ever entered once top_defs() has already decided
+// (via its own short, *unchanged* "up to the opening (" LOOKAHEAD)
+// that a function of some kind is starting, and "{" vs ";" is a
+// completely unambiguous, default single-token JavaCC choice with
+// nothing left to predict.
+void funcDefOrDecl(Declarations decls):
 {
     boolean priv;
     TypeRef ret;
@@ -971,11 +992,18 @@ DefinedFunction defun():
     BlockNode body;
 }
 {
-    priv=storage() ret=typeref() n=name() "(" ps=params() ")" body=block()
+    priv=storage() ret=typeref() n=name() "(" ps=params() ")"
+    ( body=block()
         {
             TypeRef t = new FunctionTypeRef(ret, ps.parametersTypeRef());
-            return new DefinedFunction(priv, new TypeNode(t), n, ps, body);
+            decls.addDefun(new DefinedFunction(priv, new TypeNode(t), n, ps, body));
         }
+    | ";"
+        {
+            TypeRef t = new FunctionTypeRef(ret, ps.parametersTypeRef());
+            decls.addFuncdecl(new UndefinedFunction(new TypeNode(t), n, ps));
+        }
+    )
 }
 // #@@}
 
@@ -1050,17 +1078,25 @@ Params fixedparams():
 // #@@}
 
 // #@@range/param{
+// A parameter's own name is optional -- a bare prototype declaration
+// ("int strlen(char *);", with no body to ever refer to a parameter by
+// name) commonly omits it; a synthetic name (never seen -- there's no
+// body for it to appear or clash in) stands in so every CBCParameter
+// still has one, same as a real, named parameter would.
 CBCParameter param():
 {
     TypeNode t;
-    String n;
+    String n = null;
     List<Long> dims;
 }
 {
-    t=type() n=name() dims=arraySuffix()
+    t=type() [ n=name() ] dims=arraySuffix()
         {
             if (! dims.isEmpty()) {
                 t = new TypeNode(withArrayDims(t.typeRef(), dims));
+            }
+            if (n == null) {
+                n = anonymousParamName();
             }
             return new CBCParameter(t, n);
         }
