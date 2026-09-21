@@ -24,6 +24,7 @@ public interface ASTVisitor<S, E> {
     public E visit(LogicalOrNode node);
     public E visit(LogicalAndNode node);
     public E visit(BinaryOpNode node);
+    public E visit(CommaNode node);
     public E visit(UnaryOpNode node);
     public E visit(PrefixOpNode node);
     public E visit(SuffixOpNode node);

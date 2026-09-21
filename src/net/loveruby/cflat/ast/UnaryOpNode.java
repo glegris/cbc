@@ -50,6 +50,19 @@ public class UnaryOpNode extends ExprNode {
         return expr.location();
     }
 
+    /** Same deferred-validation pattern as AddressNode/AggregateLiteralNode
+     *  (see either's own comment): a unary "+"/"-" of a constant operand
+     *  (e.g. a top-level "static int x = -5;") is itself a compile-time
+     *  constant, but DereferenceChecker's blunt top-level-initializer
+     *  gate has no notion of looking inside this node at its own operand
+     *  the way IRGenerator's foldStaticConstant does -- so this always
+     *  reports true, deferring to that real, context-aware check
+     *  (falling back to the same "not a compile-time constant" error an
+     *  unfoldable aggregate leaf already gets). */
+    public boolean isConstant() {
+        return true;
+    }
+
     protected void _dump(Dumper d) {
         d.printMember("operator", operator);
         d.printMember("expr", expr);

@@ -55,6 +55,20 @@ public class BinaryOpNode extends ExprNode {
         return left.location();
     }
 
+    /** Same deferred-validation pattern as AddressNode/AggregateLiteralNode
+     *  (see either's own comment): a basic-arithmetic constant expression
+     *  of two constant operands (e.g. a top-level "static float g =
+     *  1.0f/2.2f;", as stb_image.h's own "stbi__h2l_gamma_i" is)
+     *  is itself a compile-time constant, but DereferenceChecker's blunt
+     *  top-level-initializer gate has no notion of looking inside this
+     *  node at its own operands the way IRGenerator's foldStaticConstant
+     *  does -- so this always reports true, deferring to that real,
+     *  context-aware check (falling back to the same "not a compile-time
+     *  constant" error an unfoldable aggregate leaf already gets). */
+    public boolean isConstant() {
+        return true;
+    }
+
     protected void _dump(Dumper d) {
         d.printMember("operator", operator);
         d.printMember("left", left);

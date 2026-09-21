@@ -163,6 +163,12 @@ abstract public class Visitor implements ASTVisitor<Void, Void> {
         return null;
     }
 
+    public Void visit(CommaNode n) {
+        visitExpr(n.left());
+        visitExpr(n.right());
+        return null;
+    }
+
     public Void visit(UnaryOpNode node) {
         visitExpr(node.expr());
         return null;

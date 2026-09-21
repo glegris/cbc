@@ -31,7 +31,11 @@ main(int argc, char **argv)
     fgetc(f);  /* one more read past the end -- actually hits EOF */
     printf("%d;", feof(f));
 
-    fseek(f, 0, 0);
+    fseek(f, 0, SEEK_SET);
+    printf("%d;", (int)ftell(f));
+    fseek(f, 2, SEEK_CUR);
+    printf("%d;", (int)ftell(f));
+    fseek(f, 0, SEEK_END);
     printf("%d;", (int)ftell(f));
     fclose(f);
 

@@ -47,13 +47,30 @@ public class VariableNode extends LHSNode {
         return true; 
     }
 
-    public boolean isAssignable() { 
+    public boolean isAssignable() {
         if (entity.isConstant()) {
             return false;
         }
-        return isLoadable(); 
+        return isLoadable();
     }
     /*=====  End of fix constant entity bug  ======*/
+
+    /** Same deferred-validation pattern as AddressNode/AggregateLiteralNode
+     *  (see either's own comment): DereferenceChecker's blunt top-level-
+     *  initializer gate runs too early to tell a genuinely non-constant
+     *  reference (an ordinary global) from a bare function name, which
+     *  decays to its own link-time-constant address exactly like
+     *  visit(VariableNode) already resolves it at runtime (see its own
+     *  isLoadable() check) -- e.g. stb_image.h's own "static
+     *  stbi_io_callbacks stbi__stdio_callbacks = { stbi__stdio_read,
+     *  ... };". So this always reports true, and IRGenerator's own
+     *  foldStaticConstant does the real, context-aware check, correctly
+     *  rejecting an ordinary non-constant global reference with the same
+     *  "not a compile-time constant" error an unfoldable aggregate leaf
+     *  already gets. */
+    public boolean isConstant() {
+        return true;
+    }
     
     public TypeNode typeNode() {
         return entity().typeNode();

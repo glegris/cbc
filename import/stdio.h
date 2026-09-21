@@ -9,6 +9,13 @@
 
 #define EOF (-1)
 
+/* fseek()'s own "whence" argument (C99 7.19.9.2) -- matching
+ * mir_sysio_seek()'s own hardcoded 0/1/2 convention on the JVM backend
+ * (see StandardRuntime.java), and the real libc's on x86. */
+#define SEEK_SET 0
+#define SEEK_CUR 1
+#define SEEK_END 2
+
 /* Real file I/O: fopen()/fclose()/fread()/fwrite()/fgets()/fputc()/
  * fgetc()/feof()/ftell()/fseek()/fflush() and friends below (including
  * putchar()/puts(), now real functions rather than the compile-time

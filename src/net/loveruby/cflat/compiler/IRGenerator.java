@@ -280,7 +280,22 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
             }
             else {
                 for (ExprNode val : c.values()) {
-                    Expr v = transformExpr(val);
+                    // A case label must be an integer *constant*
+                    // expression (C99 6.8.4.2p3), not just any
+                    // expression transformExpr() can turn into runtime
+                    // code -- e.g. stb_image.h's own "case
+                    // STBI__COMBO(a,b):", a macro expanding to "case
+                    // ((a)*8+(b)):", needs the same compile-time folding
+                    // a static initializer already gets (foldStaticConstant),
+                    // not a raw "(Int)transformExpr(val)" cast that
+                    // throws ClassCastException on anything transformExpr()
+                    // lowers to a real IR Bin/Mem/... instead.
+                    Expr v = foldStaticConstant(val);
+                    if (!(v instanceof Int)) {
+                        errorHandler.error(val.location(),
+                                "case label does not reduce to an integer constant");
+                        continue;
+                    }
                     cases.add(new Case(((Int)v).value(), c.label()));
                 }
             }
@@ -791,6 +806,30 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
     }
     // #@@}
 
+    // C99 6.5.17's comma operator: evaluate the left operand purely for
+    // its side effect (its own value is always discarded, whatever it
+    // is), then the right, whose value is this whole node's own value --
+    // "statement-ness" (isStatement()) has to be checked *before*
+    // transforming either side, and then applied to the right side
+    // specifically via transformStmt() rather than transformExpr(): the
+    // left is always "just for effect" regardless of context, but a
+    // top-level "a, b;" statement needs its own *right* side to see
+    // isStatement()==true too (so e.g. an assignment there skips
+    // allocating a throwaway temp, and this returns null instead of a
+    // real Expr -- otherwise visit(ExprStmtNode) would wrongly warn
+    // "useless expression" on a perfectly normal statement).
+    public Expr visit(CommaNode node) {
+        boolean stmt = isStatement();
+        transformExpr(node.left());
+        if (stmt) {
+            transformStmt(node.right());
+            return null;
+        }
+        else {
+            return transformExpr(node.right());
+        }
+    }
+
     //
     // Expressions (no side effects)
     //
@@ -1228,7 +1267,10 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
      *  an actual link-time constant address; "&globalArray[i]" or
      *  "&globalStruct.field", for instance, would need computing a
      *  constant byte offset on top of the base address, which nothing
-     *  here does yet. */
+     *  here does yet -- a bare function name, which decays to its own
+     *  address exactly like visit(VariableNode) already resolves it at
+     *  runtime -- or a basic-arithmetic (+-* /) BinaryOpNode of two
+     *  further-foldable operands of the same kind (int or float). */
     private Expr foldStaticConstant(ExprNode expr) {
         if (expr instanceof IntegerLiteralNode
                 || expr instanceof FloatLiteralNode
@@ -1236,9 +1278,19 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
             return transformExpr(expr);
         }
         if (expr instanceof VariableNode) {
-            Entity ent = ((VariableNode) expr).entity();
+            VariableNode vn = (VariableNode) expr;
+            Entity ent = vn.entity();
             if (ent.isConstant()) {
                 return foldStaticConstant(ent.value());
+            }
+            if (!vn.isLoadable()) {
+                // A bare function name decays to its own address --
+                // exactly like visit(VariableNode) already resolves it
+                // at runtime (see its own isLoadable() check) -- so it's
+                // just as much a link-time constant as "&someGlobal" is,
+                // e.g. stb_image.h's own "stbi_io_callbacks c = {
+                // stbi__stdio_read, stbi__stdio_skip, stbi__stdio_eof };".
+                return new Addr(ptr_t(), ent);
             }
             return null;
         }
@@ -1269,6 +1321,54 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
                 if (inner instanceof Flo) {
                     return new Flo(((Flo) inner).type(), - ((Flo) inner).value());
                 }
+                return null;
+            }
+            if (u.operator().equals("~")) {
+                Expr inner = foldStaticConstant(u.expr());
+                if (inner instanceof Int) {
+                    return new Int(((Int) inner).type(), ~ ((Int) inner).value());
+                }
+                return null;
+            }
+            return null;
+        }
+        if (expr instanceof BinaryOpNode) {
+            // A basic-arithmetic constant expression of two foldable
+            // operands (e.g. stb_image.h's own top-level "static float
+            // stbi__h2l_gamma_i = 1.0f/2.2f;") -- TypeChecker's own
+            // usualArithmeticConversion() already guarantees both sides
+            // share one common type by the time this runs, so there's
+            // no int/float mixing to reconcile here, only which of the
+            // two kinds it is.
+            BinaryOpNode b = (BinaryOpNode) expr;
+            Expr l = foldStaticConstant(b.left());
+            Expr r = foldStaticConstant(b.right());
+            if (l == null || r == null) return null;
+            net.loveruby.cflat.asm.Type t = asmType(b.type());
+            String op = b.operator();
+            if (l instanceof Flo && r instanceof Flo) {
+                double lv = ((Flo) l).value();
+                double rv = ((Flo) r).value();
+                if (op.equals("+")) return new Flo(t, lv + rv);
+                if (op.equals("-")) return new Flo(t, lv - rv);
+                if (op.equals("*")) return new Flo(t, lv * rv);
+                if (op.equals("/")) return new Flo(t, lv / rv);
+                return null;
+            }
+            if (l instanceof Int && r instanceof Int) {
+                long lv = ((Int) l).value();
+                long rv = ((Int) r).value();
+                if (op.equals("+")) return new Int(t, lv + rv);
+                if (op.equals("-")) return new Int(t, lv - rv);
+                if (op.equals("*")) return new Int(t, lv * rv);
+                if (op.equals("/") && rv != 0) return new Int(t, lv / rv);
+                if (op.equals("%") && rv != 0) return new Int(t, lv % rv);
+                if (op.equals("&")) return new Int(t, lv & rv);
+                if (op.equals("|")) return new Int(t, lv | rv);
+                if (op.equals("^")) return new Int(t, lv ^ rv);
+                if (op.equals("<<")) return new Int(t, lv << rv);
+                if (op.equals(">>")) return new Int(t, lv >> rv);
+                return null;
             }
             return null;
         }

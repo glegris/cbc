@@ -114,11 +114,18 @@ described below:
     enum type at runtime, matching how little C itself guarantees about
     an enum's representation). An enumerator's explicit value must
     itself be a literal (or another constant expression this compiler
-    can fold) for auto-increment to keep working after it.
+    can fold) for auto-increment to keep working after it. The tag is
+    optional (C99 6.7.2.3): `enum { A, B, C };` with neither a tag nor a
+    declared variable is real C's single most common way to just define
+    a handful of named `int` constants.
   * **`switch` fallthrough**: a `case` clause no longer has to end in
     `break` -- omitting it falls through into the next clause (including
     into `default`), same as real C. `case 1: case 2: ...` (grouped
-    labels sharing one body) already worked before and still does.
+    labels sharing one body) already worked before and still does. A
+    case label can be any integer constant expression, not just a bare
+    literal (`case (1 << 3) | FLAG:`, `case COMBO(a,b):` for a macro
+    expanding to one) -- evaluated the same way a global/static
+    initializer's own constant expression already is.
   * **Aggregate initializers**: `int[3] a = {1, 2, 3};`,
     `struct point p = {1, 2};`, and nested forms like
     `int[2][2] m = {{1,2},{3,4}};` or a struct member that's itself an
@@ -144,20 +151,56 @@ described below:
     must be compile-time constants, same as plain C requires at file
     scope; a non-static local's can be arbitrary runtime expressions,
     lowered to ordinary element-by-element assignments run where the
-    declaration appears.
+    declaration appears. C99 6.7.8p22 explicitly allows one trailing `,`
+    after the last element (`{1, 2, 3,}`), same as `enum` above.
+    A global/static initializer element being a compile-time constant
+    includes a bare function name (decaying to its own address, e.g. a
+    struct of callback function pointers) and a basic-arithmetic
+    expression of two further-constant operands (`1.0f/2.2f`), not just
+    a literal.
   * **`const`/`volatile` qualifiers**: usable on local/global variables,
     function parameters, struct/union members, casts and `sizeof`, in
-    any combination with pointers (`const char *s`, `const int x`, ...).
-    Assigning to (or `++`/`--` on) a const-qualified value is a compile
-    error. `volatile` only parses and propagates -- neither backend
-    reorders or caches memory accesses in a way it would need to
-    suppress. Not supported: qualifying a function's own return type or
-    a function pointer's parameter types, and qualifying a `typedef`'s
-    target type directly (`const MyInt x;` after a plain
+    any combination with pointers (`const char *s`, `const int x`, ...),
+    and on either side of the base type name (`const char *s`/`char
+    const *s` mean exactly the same thing). The qualifier always
+    describes the base type, however many `*`/`[]` wrap it: `const char
+    *s`/`char const *s` both mean "`s` points to a `const char`" (`s`
+    itself stays freely reassignable, only `*s = ...` is rejected), and
+    `const char *arr[10]` means "an array of pointers to `const char`" --
+    never "`s`/`arr` itself is a const pointer" (real C's separate `char
+    *const p` spelling, constifying the pointer instead of the pointee,
+    isn't supported). Assigning to (or `++`/`--` on) a const-qualified
+    value is a compile error. `volatile` only parses and propagates --
+    neither backend reorders or caches memory accesses in a way it would
+    need to suppress. Not supported: qualifying a function's own return
+    type or a function pointer's parameter types, and qualifying a
+    `typedef`'s target type directly (`const MyInt x;` after a plain
     `typedef int MyInt;` works fine, though). The original `const NAME =
     value;` top-level constant form (used well before this, including by
     `enum` above) still works exactly as before and takes priority when
-    both could otherwise apply.
+    both could otherwise apply -- so a top-level `const TYPE NAME =
+    value;` (with an initializer) is still that older, substituted-by-
+    value form, never a real, independently-addressable variable; give
+    it no initializer (`static const char *p;`, assigned to later) to
+    get a real one instead.
+  * **Comma operator** (C99 6.5.17): `a, b` evaluates `a` for its side
+    effect only, then evaluates and yields `b` -- most often seen in a
+    `for` loop's init/increment clauses (`for (i = 0, j = n; ...; i++,
+    j--))`), or explicitly parenthesized (`x = (a = 1, b = 2, a + b);`).
+    Deliberately left out of every spot a bare `,` already means
+    something else (a function call's arguments, an initializer list, an
+    array size, ...), matching real C's own grammar restricting those to
+    one step down (`assignment-expression`) for the same reason.
+  * **Multiple declarators in a struct/union member list**: `struct p {
+    int x, y; };` -- each one after the first re-applies its own
+    `*`/`[N]`/`[]`/`:width` to the same shared base type, exactly like a
+    plain variable declaration's own `int *p, q;` (`q` is plain `int`,
+    not `int*`) already worked.
+  * **`extern` on a function definition**: `extern int f(void) { ... }`
+    (as opposed to a bare declaration, `extern int f(void);`) -- a
+    complete no-op, since a top-level function is externally linked by
+    default anyway, but real-world headers write it purely to visually
+    pair a definition with its own extern declaration elsewhere.
   * **Mixed declarations and code**: a variable declaration can appear
     anywhere among a block's statements, not just at the top --
     `printf("go\n"); int x = f(); printf("%d\n", x);` -- and its
@@ -404,10 +447,12 @@ What ships in `import/`, organized like the standard itself:
     `StandardRuntime.java` but had no header at all before, so nothing
     could actually call them without declaring them by hand first.
     `<assert.h>`'s `assert()` needed one small new thing to be
-    expressible at all: this compiler has no comma operator, so its
-    usual `(expr) || (fprintf(...), abort(), 0)` form doesn't work here
-    -- see the header's own comment for the (still library-free)
-    workaround. `<limits.h>`'s `LONG_MIN`/`LONG_MAX`/`ULONG_MAX` and
+    expressible at all: at the time it was written, this compiler had no
+    comma operator (see below -- it does now, but the header's own
+    workaround still works fine and was never revisited), so its usual
+    `(expr) || (fprintf(...), abort(), 0)` form didn't work -- see the
+    header's own comment for the (still library-free) workaround it uses
+    instead. `<limits.h>`'s `LONG_MIN`/`LONG_MAX`/`ULONG_MAX` and
     `<stdint.h>`'s `intptr_t`/`uintptr_t` are, unavoidably, the one place
     a header's own content depends on which backend it ends up compiled
     for: plain `long` (and a pointer) is 4 bytes on x86 but 8 on the JVM
@@ -493,6 +538,10 @@ C-style address space:
     file -- including one returning a struct/union by value. Only
     calling through a plain function-pointer variable is supported, not
     a more complex expression (an array element, a struct member, ...).
+    A function pointer's own parameter list can name its parameters
+    (`int (*read)(void *user, char *data, int size);`), purely as
+    documentation -- nothing here ever binds one to a value, so a name
+    is accepted and simply discarded, same as real C allows.
   * **`float`/`double`**: variables, parameters, returns, globals,
     struct/union members and array elements; arithmetic (`+ - * /`,
     unary `-`), comparisons (including correct IEEE 754 "unordered"
@@ -608,7 +657,9 @@ knows about directly -- is simply a call to an *inherited* method:
     `StandardRuntime` primitives (`mir_sysio_open`/`_close`/`_read`/
     `_write`/`_seek`/`_tell`/`_feof`), each backed by a real
     `java.io.RandomAccessFile` (fd 0/1/2 go through `System.in`/`out`/
-    `err` instead, the same streams `printf` already uses).
+    `err` instead, the same streams `printf` already uses). `SEEK_SET`/
+    `SEEK_CUR`/`SEEK_END` (C99 7.19.9.2's own `fseek()` "whence" values)
+    are defined too, matching `mir_sysio_seek()`'s own 0/1/2 convention.
   * **`<stdio.h>` `printf`/`fprintf`/`sprintf`/`snprintf`** (and their
     `v...()` counterparts) are no longer intrinsics or bare externs --
     `printf` was the very last compile-time intrinsic left, and now has

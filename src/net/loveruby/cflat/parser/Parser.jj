@@ -229,7 +229,8 @@ public class Parser {
             }
             else {
                 if (next == null) {
-                    throw new ParseException("enum " + enumName + ": enumerator '"
+                    throw new ParseException("enum "
+                            + (enumName != null ? enumName : "(anonymous)") + ": enumerator '"
                             + memberName + "' needs an explicit value (cannot "
                             + "auto-increment after a non-literal enumerator value)");
                 }
@@ -239,7 +240,12 @@ public class Parser {
             decls.addConstant(new Constant(new TypeNode(IntegerTypeRef.intRef()),
                     memberName, constValue));
         }
-        decls.addTypedef(new TypedefNode(loc, IntegerTypeRef.intRef(), enumName));
+        // No tag at all ("enum { A, B, C };", real C's usual way to just
+        // define a handful of named int constants with no need for the
+        // type itself) -- nothing to alias, so no typedef to add.
+        if (enumName != null) {
+            decls.addTypedef(new TypedefNode(loc, IntegerTypeRef.intRef(), enumName));
+        }
         return decls;
     }
     // #@@}
@@ -379,21 +385,40 @@ public class Parser {
 
     // #@@range/declaratorType{
     // One declarator's own final type in a "T d1, d2, ...;" list: its
-    // own array dims (if any -- see withArrayDims()) applied first,
-    // then any "const"/"volatile" shared by the whole declaration --
-    // matching the order type() itself already used (qualifying the
-    // *whole* type, e.g. "T *p" becoming a const pointer rather than a
-    // pointer to const T; a pre-existing simplification, not something
-    // this per-declarator handling changes).
+    // own array dims (if any -- see withArrayDims()) applied first, then
+    // any "const"/"volatile" written on this declaration -- which C's
+    // own grammar always has qualify the *base type*, not whatever
+    // "*"/"[]" wrapping ends up around it: "const char *p"/"const char
+    // *arr[10]" mean "p points to a const char"/"arr is an array of
+    // pointers to const char" (the pointer/array itself stays freely
+    // reassignable), never "p itself is a const pointer to mutable
+    // char". qualifyBase() pushes the qualifier down through however
+    // many Pointer/Array layers wrap the base type to land there,
+    // instead of wrapping the outermost type the way a plain, pointer-
+    // less "T x;" naturally already does.
     private TypeNode declaratorType(TypeRef ref, List<Long> dims,
             boolean isConst, boolean isVolatile) {
         if (! dims.isEmpty()) {
             ref = withArrayDims(ref, dims);
         }
         if (isConst || isVolatile) {
-            ref = new QualifiedTypeRef(ref, isConst, isVolatile);
+            ref = qualifyBase(ref, isConst, isVolatile);
         }
         return new TypeNode(ref);
+    }
+
+    private TypeRef qualifyBase(TypeRef ref, boolean isConst, boolean isVolatile) {
+        if (ref instanceof PointerTypeRef) {
+            return new PointerTypeRef(qualifyBase(
+                    ((PointerTypeRef) ref).baseType(), isConst, isVolatile));
+        }
+        if (ref instanceof ArrayTypeRef) {
+            ArrayTypeRef a = (ArrayTypeRef) ref;
+            TypeRef elem = qualifyBase(a.baseType(), isConst, isVolatile);
+            return a.isLengthUndefined() ? new ArrayTypeRef(elem)
+                                          : new ArrayTypeRef(elem, a.length());
+        }
+        return new QualifiedTypeRef(ref, isConst, isVolatile);
     }
     // #@@}
 
@@ -931,6 +956,9 @@ List<DefinedVariable> defvars_body():
     priv=storage()
     ( <CONST> { isConst = true; } | <VOLATILE> { isVolatile = true; } )*
     coreRef=typeref_base()
+    // "east const" ("char const *p") is accepted here too -- see
+    // param()'s own comment on this same trailing form.
+    ( <CONST> { isConst = true; } | <VOLATILE> { isVolatile = true; } )*
     // Each declarator in a "T d1, d2, ...;" comma list re-applies its
     // *own* "*"/"[N]"/"[]" to the same shared base type ("coreRef"),
     // instead of every declarator after the first blindly inheriting
@@ -993,9 +1021,19 @@ AggregateLiteralNode aggregate_literal():
 {
     t="{" d=designated_initializer()
         { raw.add(d); }
-    ("," d=designated_initializer()
+    // LOOKAHEAD(2): a bare LOOKAHEAD(1) here can't tell a "," that
+    // starts another element from the trailing "," a "{ ..., }" ends
+    // on (see the "[ "," ]" below) -- it would always assume the
+    // former and then fail outright on the "}" that actually follows,
+    // exactly like defenum()'s own comma list needs the same 2-token
+    // lookahead for the exact same reason.
+    ( LOOKAHEAD(2) "," d=designated_initializer()
         { raw.add(d); }
     )*
+    // C99 6.7.8p22 explicitly allows one trailing "," after the last
+    // element ("{ a, b, c, }"), same as defenum() already does for the
+    // exact same reason.
+    [ "," ]
     "}"
         {
             return buildAggregateLiteral(location(t), raw);
@@ -1093,10 +1131,21 @@ void funcDefOrDecl(Declarations decls):
 // whether it's being called for a function or not, which it currently
 // doesn't, and there's no codegen difference either way since it's
 // always a no-op.
+//
+// "extern" on a function is accepted here too, and equally discarded:
+// funcDefOrDecl() (the only real caller that reaches a function through
+// this) already handles both a body and a bare ";" generically, and a
+// top-level function's linkage is external by default anyway -- "extern
+// int f(void) { ... }"/"extern int f(void);" mean exactly the same
+// thing "int f(void) { ... }"/"int f(void);" already do. Real-world
+// headers write it anyway, purely to visually pair a function's
+// definition with its own extern declaration elsewhere (e.g.
+// stb_image.h's "extern const char *stbi_failure_reason(void) {
+// ... }"), so this needs to parse even though it changes nothing.
 boolean storage():
 { boolean isStatic = false; }
 {
-    ( <STATIC> { isStatic = true; } | <INLINE> )*
+    ( <STATIC> { isStatic = true; } | <INLINE> | <EXTERN> )*
         { return isStatic; }
 }
 // #@@}
@@ -1194,6 +1243,15 @@ CBCParameter param():
 {
     ( <CONST> { isConst = true; } | <VOLATILE> { isVolatile = true; } )*
     coreRef=typeref_base()
+    // "east const" ("char const *p", as opposed to the leading "const
+    // char *p" already accepted above): real C's own declaration-
+    // specifiers allow a type-qualifier on either side of the type
+    // name itself (only its position *relative to a "*"* changes what
+    // it qualifies -- the pointee before one, the pointer itself after
+    // -- not its position relative to the base type name), and
+    // real-world code (e.g. stb_image.h's whole public API) uses this
+    // style throughout.
+    ( <CONST> { isConst = true; } | <VOLATILE> { isVolatile = true; } )*
     ( LOOKAHEAD(2) fp=funcPtrDeclarator(coreRef)
         {
             n = fp.name;
@@ -1302,15 +1360,20 @@ UnionNode defunion():
 Declarations defenum():
 {
     Token t;
-    String n;
+    String n = null;
     List<String> names = new ArrayList<String>();
     List<ExprNode> values = new ArrayList<ExprNode>();
     String memberName;
     ExprNode memberValue;
 }
 {
-    t=<ENUM> n=name()
-        { addType(n); }
+    // The tag is optional (C99 6.7.2.3), unlike defstruct()/defunion()'s
+    // own -- an anonymous struct/union with no tag AND no declared
+    // variable would be pointless (nothing could ever refer to it
+    // again), but "enum { A, B, C };" with neither is real C's single
+    // most common way to just define a handful of named int constants,
+    // with no need for the type itself at all.
+    t=<ENUM> [n=name() { addType(n); }]
     "{"
     memberName=name()
         { names.add(memberName); values.add(null); }
@@ -1335,10 +1398,10 @@ Declarations defenum():
 List<Slot> member_list():
 {
     List<Slot> membs = new ArrayList<Slot>();
-    Slot s;
+    List<Slot> ss;
 }
 {
-    "{" (s=slot() ";" { membs.add(s); })* "}"
+    "{" (ss=slot() ";" { membs.addAll(ss); })* "}"
         {
             return membs;
         }
@@ -1346,7 +1409,14 @@ List<Slot> member_list():
 // #@@}
 
 // #@@range/slot{
-Slot slot():
+// A single "T d1, d2, ...;" struct/union member declaration -- like
+// defvars_body()'s own comma list (see its comment for why each
+// declarator re-applies its own "*"/"[N]"/"[]"/":width" to the same
+// shared base type, "coreRef", instead of inheriting the first
+// declarator's own postfix), but for struct members: "int a, b;" is
+// exactly as common inside a struct as it is for a plain variable
+// declaration (e.g. stb_image.h's own "stbi__uint32 img_x, img_y;").
+List<Slot> slot():
 {
     boolean isConst = false;
     boolean isVolatile = false;
@@ -1357,11 +1427,22 @@ Slot slot():
     List<Long> dims;
     FuncPtrDeclarator fp;
     Token widthTok;
-    long width = -1;
+    long width;
+    List<Slot> membs = new ArrayList<Slot>();
 }
 {
     ( <CONST> { isConst = true; } | <VOLATILE> { isVolatile = true; } )*
     coreRef=typeref_base()
+    // "east const" ("char const *p", as opposed to the leading "const
+    // char *p" already accepted above): real C's own declaration-
+    // specifiers allow a type-qualifier on either side of the type
+    // name itself (only its position *relative to a "*"* changes what
+    // it qualifies -- the pointee before one, the pointer itself after
+    // -- not its position relative to the base type name), and
+    // real-world code (e.g. stb_image.h's whole public API) uses this
+    // style throughout.
+    ( <CONST> { isConst = true; } | <VOLATILE> { isVolatile = true; } )*
+        { width = -1; }
     ( LOOKAHEAD(2) fp=funcPtrDeclarator(coreRef)
         {
             n = fp.name;
@@ -1393,8 +1474,32 @@ Slot slot():
         }
     )
         {
-            return (width == -1)
-                    ? new Slot(t, n) : new Slot(t, n, width);
+            membs.add((width == -1) ? new Slot(t, n) : new Slot(t, n, width));
+        }
+    ( "," { width = -1; }
+      ( LOOKAHEAD(2) fp=funcPtrDeclarator(coreRef)
+            {
+                n = fp.name;
+                t = declaratorType(fp.type, new ArrayList<Long>(), isConst, isVolatile);
+            }
+        | ":" widthTok=<INTEGER>
+            {
+                n = anonymousFieldName();
+                width = integerValue(widthTok.image);
+                t = declaratorType(coreRef, new ArrayList<Long>(), isConst, isVolatile);
+            }
+        | declRef=typePostfix(coreRef) n=name() dims=arraySuffix()
+          [ ":" widthTok=<INTEGER> { width = integerValue(widthTok.image); } ]
+            {
+                t = declaratorType(declRef, dims, isConst, isVolatile);
+            }
+        )
+            {
+                membs.add((width == -1) ? new Slot(t, n) : new Slot(t, n, width));
+            }
+    )*
+        {
+            return membs;
         }
 }
 // #@@}
@@ -1430,6 +1535,15 @@ UndefinedVariable vardecl():
     <EXTERN>
     ( <CONST> { isConst = true; } | <VOLATILE> { isVolatile = true; } )*
     coreRef=typeref_base()
+    // "east const" ("char const *p", as opposed to the leading "const
+    // char *p" already accepted above): real C's own declaration-
+    // specifiers allow a type-qualifier on either side of the type
+    // name itself (only its position *relative to a "*"* changes what
+    // it qualifies -- the pointee before one, the pointer itself after
+    // -- not its position relative to the base type name), and
+    // real-world code (e.g. stb_image.h's whole public API) uses this
+    // style throughout.
+    ( <CONST> { isConst = true; } | <VOLATILE> { isVolatile = true; } )*
     ( LOOKAHEAD(2) fp=funcPtrDeclarator(coreRef)
         {
             n = fp.name;
@@ -1471,7 +1585,19 @@ TypeRef typeref():
     TypeRef ref;
 }
 {
+    // A bare type-name (used for a cast, sizeof, a function pointer's
+    // own parameter types, an extern function declaration's return
+    // type, ...) carries no assignability of its own to restrict, so a
+    // "const"/"volatile" qualifier here -- on either side of the base
+    // type, exactly like a real declaration's own specifiers allow (see
+    // param()'s own comment on this) -- is simply consumed and
+    // discarded rather than tracked: real C accepts one in a type-name
+    // too (e.g. "(const char *)x", or stb_image.h's own "extern const
+    // char *stbi_failure_reason(void);"), it just never does anything
+    // here that plain "char *" wouldn't already do.
+    ( <CONST> | <VOLATILE> )*
     ref=typeref_base()
+    ( <CONST> | <VOLATILE> )*
     ref=typePostfix(ref)
         {
             return ref;
@@ -1558,8 +1684,14 @@ ParamTypeRefs fixedparam_typerefs():
     TypeRef ref;
 }
 {
-    ref=typeref() { refs.add(ref); }
-    ( LOOKAHEAD(2) "," ref=typeref() { refs.add(ref); } )*
+    // A function *pointer*'s own parameter types (as opposed to a real
+    // function definition/prototype's params() -- see its own comment)
+    // never need a name at all: nothing here ever binds one to a value.
+    // Real C still allows writing one anyway, purely as documentation
+    // (e.g. stb_image.h's "int (*read)(void *user, char *data, int
+    // size);"), so one is accepted here too and simply discarded.
+    ref=typeref() [ name() ] { refs.add(ref); }
+    ( LOOKAHEAD(2) "," ref=typeref() [ name() ] { refs.add(ref); } )*
         {
             return new ParamTypeRefs(refs);
         }
@@ -1758,7 +1890,7 @@ StmtNode stmt():
                     new ArrayList<StmtNode>());
         }
     | LOOKAHEAD(2) n=labeled_stmt()
-    | e=expr() ";" { n = new ExprStmtNode(e.location(), e); }
+    | e=commaExpr() ";" { n = new ExprStmtNode(e.location(), e); }
     | n=block()
     | n=if_stmt()
     | n=while_stmt()
@@ -1851,11 +1983,11 @@ StmtNode for_stmt():
     t=<FOR> "("
               ( LOOKAHEAD(declaratorLookahead())
                 initDecls=defvars_body()
-              | [init=expr()]
+              | [init=commaExpr()]
               )
               ";"
-              [cond=expr()] ";"
-              [incr=expr()] ")" body=stmt()
+              [cond=commaExpr()] ";"
+              [incr=commaExpr()] ")" body=stmt()
         {
             ForNode forNode = new ForNode(location(t), init, cond, incr, body);
             if (initDecls == null) {
@@ -1916,7 +2048,17 @@ List<ExprNode> cases():
     ExprNode n;
 }
 {
-    (<CASE> n=primary() ":" { values.add(n); })+
+    // A case label is a full constant-expression (C99 6.6/6.8.4.2p3;
+    // expr10() is this grammar's own "conditional-expression and below"
+    // level, excluding only assignment and the comma operator, neither
+    // of which a constant expression allows anyway) -- not just
+    // primary(), which can't parse anything with a top-level operator
+    // at all outside of parentheses (e.g. "case 1 << 3 | 1:", as
+    // opposed to "case STBI__COMBO(1,2):", a *parenthesized* macro
+    // expansion that already happened to fit through primary()'s own
+    // "(" commaExpr() ")" alternative). Whether it's actually constant
+    // is checked later, in IRGenerator (see visit(SwitchNode)).
+    (<CASE> n=expr10() ":" { values.add(n); })+
         {
             return values;
         }
@@ -1986,6 +2128,28 @@ ReturnNode return_stmt():
       LOOKAHEAD(2) t=<RETURN> ";" { return new ReturnNode(location(t), null); }
     | t=<RETURN> expr=expr() ";"  { return new ReturnNode(location(t), expr); }
 }
+
+// #@@range/commaExpr{
+// C99 6.5.17's comma operator: real C's own "expression" production
+// (assignment-expression ("," assignment-expression)*) -- only used
+// where that grammar actually calls for a full expression, not
+// "expr()"'s own assignment-expression level: an expression-statement,
+// a for-loop's init/condition/increment clauses, and a parenthesized
+// grouping (see this file's other commaExpr() call sites). Left out of
+// every other "expr()" call site (function-call arguments, an
+// initializer, a designated initializer's value, an array subscript, a
+// return value, ...) on purpose: a bare "," already means something
+// else there (the next argument/element), exactly like real C's own
+// grammar restricts them to assignment-expression for the same reason.
+ExprNode commaExpr():
+{ ExprNode e, e2; }
+{
+    e=expr() ("," e2=expr() { e = new CommaNode(e, e2); })*
+        {
+            return e;
+        }
+}
+// #@@}
 
 // #@@range/expr{
 ExprNode expr():
@@ -2370,7 +2534,7 @@ ExprNode primary():
         {
             return new VariableNode(location(t), t.image);
         }
-    | "(" n=expr() ")"
+    | "(" n=commaExpr() ")"
         {
             return n;
         }

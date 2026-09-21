@@ -368,7 +368,15 @@ class TypeChecker extends Visitor {
      */
     private boolean isSafeIntegerCast(Node node, Type type) {
         if (! type.isInteger()) return false;
-        IntegerType t = (IntegerType)type;
+        // getIntegerType(), not a raw cast: type.isInteger() can be true
+        // for a UserType/QualifiedType wrapping (forwarding to) a real
+        // IntegerType without itself *being* one (a typedef'd or
+        // const-qualified integer type, e.g. stb_image.h's own "typedef
+        // unsigned char stbi_uc;"), which a bare "(IntegerType)type"
+        // cast would throw ClassCastException on instead of the plain
+        // "false" every other type this isn't an integer at all already
+        // gets right below.
+        IntegerType t = type.getIntegerType();
         if (! (node instanceof IntegerLiteralNode)) return false;
         IntegerLiteralNode n = (IntegerLiteralNode)node;
         return t.isInDomain(n.value());

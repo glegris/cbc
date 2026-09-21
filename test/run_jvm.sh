@@ -328,7 +328,7 @@ run_case narrowing-cast-return "132767"
 run_case stdlib-funcs "3;1;3;2;-123;abc;255;314;xyz;1;1;1;2;3;4;5;1;4"
 run_case printf-funcs "7-seven;[   42][42   ][00042][+42][-42];[hi        ][he];[4000000000][ff][FF][0xff][10][123456789];[3.141590][3.14][    3.14];100%;x=5,y=abc,9;12,5;1"
 run_case file-io "hello file
-Xworld;0;1;0;1"
+Xworld;0;1;0;2;17;1"
 
 # --- preprocessor: variadic macros (incl. GNU ", ##__VA_ARGS__" comma
 # elision), predefined macros, and #line's effect on __LINE__ ---
@@ -470,6 +470,20 @@ assert_error_contains errloc \
     "errloc.c:12: unresolved reference: errloc_undefined_after_include"
 assert_multifile_error_contains errloc-multifile \
     "errloc-multifile-b.c:10: unresolved reference: errloc_multifile_undefined"
+
+# --- a batch of real-world-C gaps found while getting stb_image.h (a
+# ~8000-line, unrelated third-party single-header image-decoding
+# library) to compile and actually decode a real image through this
+# compiler's own JVM backend -- see each test's own comment for the
+# specific gap it covers ---
+run_case comma-operator "5;5;100;200;300;1;2;"
+run_case anonymous-enum "1;2;3;"
+run_case east-const "5;hello;"
+run_case struct-multi-declarator "1;2;n;l;6;20;"
+run_case static-init-extras "8;2;50;10;"
+run_case ptr-to-const "first;second;"
+run_case switch-case-const-expr "100;200;300;400;-1;"
+run_case typedef-integer-literal "200;"
 
 echo
 echo "pass=$pass known-diff=$known fail=$fail"
