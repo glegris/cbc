@@ -270,6 +270,10 @@ run_case operator-precedence "0;1;0;1;5;"
 # see unary-promotion.c's own comments ---
 run_case unary-promotion "1;1;1;1;"
 
+# --- "!"'s own result type is always "int" (C99 6.5.3.3p5), found via
+# the c-testsuite project's own tests -- see sizeof-not.c ---
+run_case sizeof-not "1;4;4;"
+
 echo
 echo "pass=$pass known-diff=$known fail=$fail"
 rm -rf "$SCRATCH"

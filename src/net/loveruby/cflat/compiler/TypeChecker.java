@@ -587,12 +587,18 @@ class TypeChecker extends Visitor {
     public Void visit(UnaryOpNode node) {
         super.visit(node);
         if (node.operator().equals("!")) {
-            // "!"'s own result is always a plain 0/1 "int" regardless
-            // of its operand's type (any scalar, unpromoted -- it's
-            // just tested for zero/nonzero, never itself computed at a
-            // wider width), so unlike +/-/~ below, this needs no
-            // promotion at all.
-            mustBeScalar(node.expr(), node.operator());
+            // "!"'s own result is always a plain 0/1 "int" (C99
+            // 6.5.3.3p5), regardless of its operand's type (any
+            // scalar, unpromoted -- the operand is just tested for
+            // zero/nonzero, never itself computed at a wider width),
+            // so unlike +/-/~ below, this needs no operand promotion
+            // at all -- but the node's OWN reported type still needs
+            // to be overridden to "int" explicitly (see
+            // UnaryOpNode#setType()'s own doc comment): "sizeof(!x)"
+            // must be sizeof(int) even when x is e.g. "char".
+            if (mustBeScalar(node.expr(), node.operator())) {
+                node.setType(typeTable.signedInt());
+            }
         }
         else if (node.operator().equals("-") || node.operator().equals("+")) {
             // Unary +/- accept a float/double operand too (~ doesn't:
