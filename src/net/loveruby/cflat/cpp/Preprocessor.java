@@ -43,14 +43,16 @@ import java.util.regex.Pattern;
  * Every input line becomes exactly one output line (a directive line, or
  * a suppressed line inside an inactive #if branch, becomes a blank
  * line), so line numbers in the rest of the compiler's error messages
- * stay meaningful -- except across an #include, where the included
- * file's own lines are spliced in inline and everything in the
- * including file *after* the #include shifts by however many lines that
- * added. #line (see handleLine) corrects __LINE__/__FILE__ for this,
- * but -- same as #include -- has no way to correct what the *rest* of
- * the compiler reports, since nothing downstream of this pass knows
- * anything beyond a line's position in the single, already flattened
- * text it receives. */
+ * would otherwise stay meaningful only within a single file -- an
+ * #include splices the included file's own lines in inline, and
+ * everything in the including file *after* the #include shifts by
+ * however many lines that added. This pass corrects for that itself, by
+ * building a LineMap (see lineMap()) alongside the flattened text that
+ * maps a line in that text back to the (file, line) it actually came
+ * from -- consulted by Parser#location so error messages name the file
+ * that really has the mistake, not just the top-level file being
+ * compiled. #line (see handleLine) updates both that map and
+ * __LINE__/__FILE__ together, so the two stay consistent. */
 public class Preprocessor {
     private final List<String> includePaths;
     private final ErrorHandler errorHandler;
@@ -116,10 +118,22 @@ public class Preprocessor {
                 cal.get(Calendar.MINUTE), cal.get(Calendar.SECOND));
     }
 
+    private LineMap lineMap;
+    private int outputLineNo;
+
     public String preprocessFile(File file) throws FileException {
         StringBuilder out = new StringBuilder();
+        lineMap = new LineMap();
+        outputLineNo = 0;
         processFile(file, out);
         return out.toString();
+    }
+
+    /** Maps a line number in the string preprocessFile() returned back to
+     *  the (file, line) it actually came from -- see LineMap's own doc
+     *  comment. Only meaningful after preprocessFile() has been called. */
+    public LineMap lineMap() {
+        return lineMap;
     }
 
     private static class CondFrame {
@@ -154,6 +168,8 @@ public class Preprocessor {
             LineState lineState = new LineState();
             lineState.reportedFile = file.getPath();
             lineState.lineDelta = 0;
+            lineMap.addBreakpoint(outputLineNo + 1, lineState.reportedFile,
+                    (int) (1 + lineState.lineDelta));
             int i = 0;
             int lineNo = 0;
             while (i < lines.size()) {
@@ -178,7 +194,15 @@ public class Preprocessor {
                 boolean active = isActive(condStack);
 
                 if (!wasInComment && isDirectiveLine(line)) {
-                    handleDirective(line, file, lineNo, condStack, out, active, lineState);
+                    // A directive line's own output (a blank placeholder,
+                    // appended below) lands *after* whatever it
+                    // recursively splices in here (an #include's
+                    // content) -- so a breakpoint recorded inside
+                    // handleDirective/handleInclude/handleLine has to
+                    // skip over this line's still-unappended
+                    // physicalCount lines to land on the right spot;
+                    // hence passing physicalCount through.
+                    handleDirective(line, file, lineNo, condStack, out, active, lineState, physicalCount);
                 }
                 else if (active) {
                     List<Tok> toks = lexer.tokenize(line);
@@ -199,6 +223,7 @@ public class Preprocessor {
                 }
                 out.append('\n');
                 for (int k = 1; k < physicalCount; k++) out.append('\n');
+                outputLineNo += physicalCount;
             }
             if (!condStack.isEmpty()) {
                 errorHandler.error(file.getPath() + ": unterminated #if/#ifdef/#ifndef");
@@ -232,7 +257,7 @@ public class Preprocessor {
 
     private void handleDirective(String line, File file, int lineNo,
             Deque<CondFrame> condStack, StringBuilder out, boolean active,
-            LineState lineState) {
+            LineState lineState, int physicalCount) {
         Matcher m = DIRECTIVE_NAME.matcher(line.trim());
         String name = m.lookingAt() ? m.group(1) : "";
         String rest = line.trim().substring(m.end());
@@ -311,7 +336,7 @@ public class Preprocessor {
             macros.remove(rest.trim());
         }
         else if (name.equals("include")) {
-            handleInclude(rest, file, lineNo, out);
+            handleInclude(rest, file, lineNo, out, lineState, physicalCount);
         }
         else if (name.equals("error")) {
             errorHandler.error(file.getPath() + ":" + lineNo + ": #error " + rest.trim());
@@ -322,24 +347,23 @@ public class Preprocessor {
             // (no-op) null directive.
         }
         else if (name.equals("line")) {
-            handleLine(rest, file, lineNo, lineState);
+            handleLine(rest, file, lineNo, lineState, physicalCount);
         }
         else {
             errorHandler.error(file.getPath() + ":" + lineNo + ": unknown preprocessor directive: #" + name);
         }
     }
 
-    /** #line NUMBER ["FILENAME"]: adjusts what __LINE__/__FILE__ report
-     *  from the *next* physical line onward. This is genuinely limited
-     *  to that (see the class doc for why): it can't redirect what the
-     *  rest of the compiler reports for a diagnostic, since nothing
-     *  downstream of this whole pass knows anything beyond a line's
-     *  position in the one, already-flattened text it receives. Scoped
-     *  to the current file only (see LineState) -- an #include'd file
-     *  with its own #line doesn't affect the file that included it, and
-     *  returning from it restores whatever delta the includer already
-     *  had, matching a real preprocessor's own per-file #line scoping. */
-    private void handleLine(String rest, File file, int lineNo, LineState lineState) {
+    /** #line NUMBER ["FILENAME"]: adjusts what __LINE__/__FILE__ -- and,
+     *  via the LineMap breakpoint added below, everything else the
+     *  compiler reports too -- report from the *next* physical line
+     *  onward. Scoped to the current file only (see LineState) -- an
+     *  #include'd file with its own #line doesn't affect the file that
+     *  included it, and returning from it restores whatever delta the
+     *  includer already had, matching a real preprocessor's own per-file
+     *  #line scoping. */
+    private void handleLine(String rest, File file, int lineNo, LineState lineState,
+            int physicalCount) {
         List<Tok> toks = new PPLexer().tokenize(rest);
         expander.setLocation(file.getPath(), lineNo);
         List<Tok> expanded = expander.expand(toks);
@@ -369,7 +393,10 @@ public class Preprocessor {
             }
         }
         // The *next* physical line (lineNo + 1) should report as newLine.
+        // It'll be appended right after this #line directive's own
+        // (still-pending) placeholder lines, hence the "+ physicalCount".
         lineState.lineDelta = newLine - (lineNo + 1);
+        lineMap.addBreakpoint(outputLineNo + physicalCount + 1, lineState.reportedFile, (int) newLine);
     }
 
     /** Undoes stringify()'s escaping of '"'/'\\' and strips the
@@ -539,7 +566,8 @@ public class Preprocessor {
         macros.put(name, new Macro(name, functionLike, variadic, params, body));
     }
 
-    private void handleInclude(String rest, File file, int lineNo, StringBuilder out) {
+    private void handleInclude(String rest, File file, int lineNo, StringBuilder out,
+            LineState lineState, int physicalCount) {
         Matcher qm = INCLUDE_QUOTED.matcher("include" + rest);
         Matcher am = INCLUDE_ANGLED.matcher("include" + rest);
         String includeName;
@@ -565,6 +593,14 @@ public class Preprocessor {
         }
         try {
             processFile(included, out);
+            // Resume mapping to the including file's own continuing
+            // lines -- the recursive processFile() call above just
+            // lines it contributed. The #include line's own placeholder
+            // (physicalCount lines) hasn't been appended yet -- it comes
+            // right after this, back in the outer loop -- so skip past
+            // it too.
+            lineMap.addBreakpoint(outputLineNo + physicalCount + 1, lineState.reportedFile,
+                    (int) (lineNo + 1 + lineState.lineDelta));
         }
         catch (FileException ex) {
             errorHandler.error(file.getPath() + ":" + lineNo + ": " + ex.getMessage());

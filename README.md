@@ -359,14 +359,17 @@ Not supported, scoped out: the GNU named-variadic extension and
 macros (also see above), and spreading one function-like macro call
 across multiple lines (the whole argument list must be on one logical
 line, after backslash-newline splicing). Every source line still
-produces exactly one output line so that error messages elsewhere in the
-compiler keep pointing at the right line, except across an `#include`:
-the included file's lines are spliced in inline, so line numbers in the
-including file *after* the `#include` shift by however many lines that
-added. `#line` corrects `__LINE__`/`__FILE__` for this, but -- same as
-`#include` -- has no way to correct what the rest of the compiler
-reports, since nothing downstream of the preprocessor knows anything
-beyond a line's position in the one, already-flattened text it receives.
+produces exactly one output line, but an `#include`'s lines are spliced
+in inline, so the parser only ever sees one flattened token stream
+spanning every file in the translation unit -- with no notion of file
+boundaries of its own. To keep error messages naming the actual file and
+line with the mistake (not just the top-level file being compiled), the
+preprocessor builds a `LineMap` alongside that flattened text -- a table
+of breakpoints recording, at each `#include`, `#line`, and return from an
+`#include`, which output line starts reporting as which (file, line) --
+and the parser consults it (see `Parser#location()`) to resolve every
+token back to where it really came from. `#line` updates this map and
+`__LINE__`/`__FILE__` together, so the two stay consistent.
 
 ## Standard headers
 

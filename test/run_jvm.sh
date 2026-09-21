@@ -136,6 +136,67 @@ run_multifile_case() {
     fi
 }
 
+# assert_error_contains NAME PATTERN... -- compiles NAME.c (plus NAME.h
+# if present), expecting the compile to FAIL, and checks stderr contains
+# every given substring -- used to confirm a compile error names the
+# actual (file, line) with the mistake, not always this top-level file
+# (see Preprocessor's LineMap and Parser#location()/#topLevelLocation()).
+assert_error_contains() {
+    local name="$1"; shift
+    local work="$SCRATCH/$name"
+    mkdir -p "$work"
+    cp "$DIR/$name.c" "$work/"
+    if [ -f "$DIR/$name.h" ]; then
+        cp "$DIR/$name.h" "$work/"
+    fi
+    ( cd "$work" && "$CBC" -arch=jvm -I "$IMPORT" -I "$DIR" "$name.c" ) \
+        >"$work/compile.out" 2>"$work/compile.err"
+    if [ $? -eq 0 ]; then
+        report FAIL "$name" "expected a compile error, but it succeeded"
+        return
+    fi
+    local errs missing=""
+    errs=$(grep -v 'Picked up' "$work/compile.err")
+    for pat in "$@"; do
+        grep -qF -- "$pat" <<<"$errs" || missing="$missing [$pat]"
+    done
+    if [ -z "$missing" ]; then
+        report OK "$name"
+    else
+        report FAIL "$name" "stderr missing:$missing -- got: $errs"
+    fi
+}
+
+# assert_multifile_error_contains NAME PATTERN... -- same as
+# assert_error_contains, but for a multi-file build (see
+# run_multifile_case's own doc comment for the NAME-*.c convention).
+assert_multifile_error_contains() {
+    local name="$1"; shift
+    local work="$SCRATCH/$name"
+    mkdir -p "$work"
+    local srcs=()
+    for f in "$DIR/$name"-*.c; do
+        cp "$f" "$work/"
+        srcs+=("$(basename "$f")")
+    done
+    ( cd "$work" && "$CBC" -arch=jvm -I "$IMPORT" -o "$name" "${srcs[@]}" ) \
+        >"$work/compile.out" 2>"$work/compile.err"
+    if [ $? -eq 0 ]; then
+        report FAIL "$name" "expected a compile error, but it succeeded"
+        return
+    fi
+    local errs missing=""
+    errs=$(grep -v 'Picked up' "$work/compile.err")
+    for pat in "$@"; do
+        grep -qF -- "$pat" <<<"$errs" || missing="$missing [$pat]"
+    done
+    if [ -z "$missing" ]; then
+        report OK "$name"
+    else
+        report FAIL "$name" "stderr missing:$missing -- got: $errs"
+    fi
+}
+
 # run_exit0 NAME -- passes if it compiles and exits 0, output not checked.
 run_exit0() {
     local name="$1"
@@ -396,6 +457,19 @@ run_case bitfield "0;7;7;-1;-8;65;0;1234;0;100000;1234;1234;5678;1234;"
 # via "extern", and both files have their own same-named-by-design
 # "static" helper to confirm those don't collide with each other. ---
 run_multifile_case multifile "106;10;100;"
+
+# --- a compile error inside an #include'd file (a header, or -- for a
+# multi-file JVM build -- another translation unit spliced in via the
+# wrapper mechanism above) used to always be reported under the
+# top-level file's own name, at some raw line count within
+# Preprocessor's internal flattened buffer, instead of the file/line
+# that actually has the mistake -- see errloc.c/.h and
+# errloc-multifile-*.c, and Preprocessor's LineMap ---
+assert_error_contains errloc \
+    "errloc.h:2: unresolved reference: errloc_undefined_in_header" \
+    "errloc.c:12: unresolved reference: errloc_undefined_after_include"
+assert_multifile_error_contains errloc-multifile \
+    "errloc-multifile-b.c:10: unresolved reference: errloc_multifile_undefined"
 
 echo
 echo "pass=$pass known-diff=$known fail=$fail"

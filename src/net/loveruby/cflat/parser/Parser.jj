@@ -42,15 +42,25 @@ public class Parser {
                                        ErrorHandler errorHandler,
                                        boolean debug)
                                        throws FileException {
-        String src = new net.loveruby.cflat.cpp.Preprocessor(
-                includePaths, errorHandler).preprocessFile(file);
+        net.loveruby.cflat.cpp.Preprocessor pp = new net.loveruby.cflat.cpp.Preprocessor(
+                includePaths, errorHandler);
+        String src = pp.preprocessFile(file);
         Reader r = new StringReader(src);
-        return new Parser(r, file.getPath(), errorHandler, debug);
+        Parser parser = new Parser(r, file.getPath(), errorHandler, debug);
+        parser.lineMap = pp.lineMap();
+        return parser;
     }
     // #@@}
 
     // #@@range/instance_members{
     private String sourceName;
+    // Corrects a token's raw (flattened-buffer) line number back to the
+    // file/line it actually came from -- see location() and LineMap's
+    // own doc comment. Null when this Parser wasn't built by
+    // newFileParser() (e.g. a test constructing one directly on a
+    // Reader), in which case location() falls back to sourceName/the
+    // token's own line number, exactly as before this existed.
+    private net.loveruby.cflat.cpp.LineMap lineMap;
     private ErrorHandler errorHandler;
     private Set<String> knownTypedefs;
     // Where a struct/union/enum defined *inside* a function body (see
@@ -469,9 +479,27 @@ public class Parser {
 
     // #@@range/location{
     protected Location location(Token t) {
+        if (lineMap != null) {
+            String file = lineMap.fileAt(t.beginLine);
+            if (file != null) {
+                return new Location(file, lineMap.lineAt(t.beginLine), new CflatToken(t));
+            }
+        }
         return new Location(sourceName, t);
     }
     // #@@}
+
+    // AST's own root location (IR#fileName(), which both backends use to
+    // name their output -- the ".file" assembler directive, or the JVM
+    // backend's whole embedded class name -- always has to mean *this
+    // translation unit's own file* (what was actually passed to compile,
+    // e.g. a multi-file build's synthesized wrapper), never wherever the
+    // compilation unit's first *token* happened to textually originate
+    // from (typically some deeply-nested #include, e.g. stddef.h),
+    // unlike every other, per-diagnostic use of location() above.
+    protected Location topLevelLocation(Token t) {
+        return new Location(sourceName, t);
+    }
 
     /** One step of a "{...}" element's C99 designator-list: either
      *  ".member" or "[index]" (the array index already folded to a
@@ -801,7 +829,7 @@ AST compilation_unit():
         }
     decls=top_defs() <EOF>
         {
-            return new AST(location(t), decls);
+            return new AST(topLevelLocation(t), decls);
         }
 }
 // #@@}
