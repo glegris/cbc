@@ -520,6 +520,13 @@ run_case ptr-to-const "first;second;"
 run_case switch-case-const-expr "100;200;300;400;-1;"
 run_case typedef-integer-literal "200;"
 
+# --- a further batch of real-world-C gaps/bugs found compiling
+# minimp3.h (a real, unrelated third-party MP3 decoder) and decoding an
+# actual MP3 through this compiler's own JVM backend -- see
+# demos/minimp3 and minimp3-gaps.c's own comment for the four specific
+# issues this covers ---
+run_case minimp3-gaps "42;1;7.0;11;12;21;22;"
+
 # --- the JVM backend's public Java-facing runtime API, added directly
 # in response to the stb_image.h demo above: a plain Java program that
 # embeds a compiled cflat program used to need reflection (a private

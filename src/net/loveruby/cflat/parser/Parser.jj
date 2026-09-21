@@ -280,7 +280,14 @@ public class Parser {
         // anchoring avoids ever touching a hex digit before it (hex
         // digits are 0-9a-fA-F, which never includes 'u'/'l', but being
         // explicit here costs nothing).
-        String s = image.replaceFirst("(?i)[ul]+$", "");
+        String suffix = image.replaceAll("(?i)^.*?([ul]*)$", "$1");
+        String s = image.substring(0, image.length() - suffix.length());
+        // An explicit "u"/"U" suffix (e.g. "18446744073709551615ULL",
+        // UINT64_MAX) always permits the full unsigned 64-bit range --
+        // C99 6.4.4.1p5's table picks "unsigned long long int" for it
+        // regardless of radix -- unlike an unsuffixed DECIMAL constant,
+        // which the same table restricts to the signed types only.
+        boolean unsigned = suffix.toLowerCase().indexOf('u') >= 0;
         if (s.startsWith("0x") || s.startsWith("0X")) {
             // A hex constant (unlike a decimal one -- C99 6.4.4.1p5's
             // own table) is allowed to pick an unsigned type when it
@@ -298,6 +305,9 @@ public class Parser {
             // Same reasoning as hex above -- an octal constant gets the
             // same unsigned-fallback treatment in C99's own table.
             return Long.parseUnsignedLong(s.substring(1), 8);
+        }
+        else if (unsigned) {
+            return Long.parseUnsignedLong(s, 10);
         }
         else {
             return Long.parseLong(s, 10);
@@ -1617,7 +1627,7 @@ TypeRef typeref():
 TypeRef typePostfix(TypeRef base):
 {
     TypeRef ref = base;
-    Token t;
+    ExprNode e;
     ParamTypeRefs params;
 }
 {
@@ -1626,9 +1636,9 @@ TypeRef typePostfix(TypeRef base):
         {
             ref = new ArrayTypeRef(ref);
         }
-    | "[" t=<INTEGER> "]"
+    | "[" e=expr10() "]"
         {
-            ref = new ArrayTypeRef(ref, integerValue(t.image));
+            ref = new ArrayTypeRef(ref, evalConstIndex(e));
         }
     | "*" [<RESTRICT>]
         {
@@ -2443,13 +2453,13 @@ String name():
 List<Long> arraySuffix():
 {
     List<Long> dims = new ArrayList<Long>();
-    Token t;
+    ExprNode e;
 }
 {
     ( LOOKAHEAD(2) "[" "]"
         { dims.add(null); }
-    | "[" t=<INTEGER> "]"
-        { dims.add(new Long(integerValue(t.image))); }
+    | "[" e=expr10() "]"
+        { dims.add(new Long(evalConstIndex(e))); }
     )*
         { return dims; }
 }

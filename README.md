@@ -338,6 +338,25 @@ described below:
     *mandatory* binary (`p`/`P`) exponent, per C99 6.4.4.2. (The `p`
     exponent is what tells a hex float apart from a plain hex integer
     literal like `0x1A`, which is unaffected.)
+  * **Array sizes as a constant expression**: `float overlap[2][9*32];`
+    -- `[N]` in a declarator (or a cast/`sizeof` type's own `[N]`) used
+    to require `N` to be a single raw integer literal token; it now
+    accepts any compile-time integer constant expression, folded right
+    at parse time by the same evaluator (`+ - * / % & | ^ << >>`, unary
+    `+ - ~ !`, `&& || == != < <= > >=`, `?:`, arbitrarily nested) already
+    used for a designated initializer's own `[index]` (see above). Found
+    compiling minimp3.h's own `mdct_overlap[2][9*32]`.
+  * **An explicit `U`/`u` suffix on a decimal integer literal** now
+    permits the full unsigned 64-bit range, matching C99 6.4.4.1p5's
+    table: `18446744073709551615ULL` (`UINT64_MAX`) used to crash the
+    compiler outright (`NumberFormatException`) -- `integerValue()`'s
+    "fall back to unsigned when the value doesn't fit a signed type"
+    handling only ever looked at a hex/octal literal's *lack* of a
+    suffix (where C99's own table allows that fallback regardless), never
+    at a decimal literal's *explicit* `U` (which the same table also
+    unconditionally allows, decimal or not) -- found compiling minimp3.h,
+    which defines `UINT64_MAX` itself rather than relying on a
+    (nonexistent, in this compiler) system `<stdint.h>`.
 
 ## Preprocessor
 
@@ -518,7 +537,17 @@ C-style address space:
     offset into it, and every function call bump-allocates and releases
     its own "stack frame" region from it, mirroring how the x86 backend
     lays out its own real stack frame. `main`'s `argv` is backed by a
-    real, freshly-built array of C strings.
+    real, freshly-built array of C strings. Indexing one level into a
+    multi-dimension array (`row = matrix[i];`, giving another array,
+    `T[M]`, rather than a scalar `T`) now correctly decays to that row's
+    own address instead of trying to load it as if it were a scalar at
+    that address -- `visit(ArefNode)` in `IRGenerator` was missing the
+    same `isLoadable()` guard `visit(MemberNode)`/`visit(PtrMemberNode)`/
+    `visit(DereferenceNode)` already had, so this silently read wrong
+    values (or threw an out-of-bounds exception, depending on the address
+    landed on) instead of ever raising a compile error; found decoding a
+    real MP3 with minimp3.h (`demos/minimp3`), whose `mp3dec_scratch_t`
+    struct has an `ist_pos[2][39]` member indexed by channel this way.
   * `main(void)` and `main(int argc, char **argv)`; `argc`/`argv` are
     derived from the JVM's own `String[] args` (with a synthetic
     `argv[0]` standing in for the program name).
@@ -558,13 +587,14 @@ C-style address space:
     `printf`/`fprintf`/`sprintf`/`snprintf` family (and their `v...()`
     counterparts) can only be compiled for the JVM backend, even for a
     call site that never itself passes a `%f`. There is no `long double`
-    (a plain or
-    `L`-suffixed floating constant is just a `double`). **Not
-    supported**: compound assignment (`+= -= *= /=`) on a `float`/
-    `double` operand -- `OpAssignNode`'s own type check unconditionally
-    requires an integer on both sides (pointer `+=`/`-=` is the one
-    existing exception); write `x = x + y;` instead of `x += y;` until
-    this is lifted.
+    (a plain or `L`-suffixed floating constant is just a `double`).
+    Compound assignment (`+= -= *= /=`) on a `float`/`double` operand
+    now works too (`y *= scale;`) -- `OpAssignNode`'s own type check used
+    to unconditionally require an integer on both sides for every
+    compound-assignment operator (pointer `+=`/`-=` was the one existing
+    exception), where C99 only actually restricts `%= &= |= ^= <<= >>=`
+    to integers; found compiling minimp3.h (`demos/minimp3`), whose own
+    `L3_ldexp_q2` does exactly this (`y *= g_expfrac[...]…`).
   * **variadic functions**: defining one (`int myprintf(char *fmt, ...)`)
     and calling it both work, for `int`/`long`/pointer and `float`/`double`
     (promoted to `double`, per C's own default argument promotion)

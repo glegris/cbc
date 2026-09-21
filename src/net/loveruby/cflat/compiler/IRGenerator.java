@@ -893,7 +893,13 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
         Expr offset = new Bin(ptrdiff_t(), Op.MUL,
                 size(node.elementSize()), transformIndex(node));
         Bin addr = new Bin(ptr_t(), Op.ADD, expr, offset);
-        return mem(addr, node.type());
+        // Same isLoadable() guard as visit(MemberNode)/visit(PtrMemberNode)/
+        // visit(DereferenceNode): indexing one level into a multi-dimension
+        // array (e.g. "row[i]" where "row" is "unsigned char[2][39]")
+        // yields another ARRAY-typed lvalue ("unsigned char[39]"), which
+        // must decay to its address like any other array-typed expression,
+        // not be read as if it were a scalar at that address.
+        return node.isLoadable() ? mem(addr, node.type()) : addr;
     }
     // #@@}
 

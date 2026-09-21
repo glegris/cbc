@@ -336,17 +336,32 @@ class TypeChecker extends Visitor {
         super.visit(node);
         if (! checkLHS(node.lhs())) return null;
         if (! checkRHS(node.rhs())) return null;
-        if (node.operator().equals("+") || node.operator().equals("-")) {
+        String op = node.operator();
+        if (op.equals("+") || op.equals("-")) {
             if (node.lhs().type().isPointer()) {
-                mustBeInteger(node.rhs(), node.operator());
+                mustBeInteger(node.rhs(), op);
                 node.setRHS(integralPromotedExpr(node.rhs()));
                 return null;
             }
         }
-        if (! mustBeInteger(node.lhs(), node.operator())) return null;
-        if (! mustBeInteger(node.rhs(), node.operator())) return null;
-        Type l = integralPromotion(node.lhs().type());
-        Type r = integralPromotion(node.rhs().type());
+        // +, -, *, / accept float operands too (e.g. "y *= scale;"),
+        // unlike %, &, |, ^, <<, >>, which C99 6.5.16.2 restricts (via
+        // the underlying binary operator) to integer operands only.
+        boolean arithmeticOnly = op.equals("+") || op.equals("-")
+                || op.equals("*") || op.equals("/");
+        Type l, r;
+        if (arithmeticOnly) {
+            if (! mustBeArithmetic(node.lhs(), op)) return null;
+            if (! mustBeArithmetic(node.rhs(), op)) return null;
+            l = arithPromotion(node.lhs().type());
+            r = arithPromotion(node.rhs().type());
+        }
+        else {
+            if (! mustBeInteger(node.lhs(), op)) return null;
+            if (! mustBeInteger(node.rhs(), op)) return null;
+            l = integralPromotion(node.lhs().type());
+            r = integralPromotion(node.rhs().type());
+        }
         Type opType = usualArithmeticConversion(l, r);
         if (! opType.isCompatible(l)
                 && ! isSafeIntegerCast(node.rhs(), opType)) {
