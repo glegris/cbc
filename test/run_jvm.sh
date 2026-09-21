@@ -340,6 +340,12 @@ run_case anonymous-struct "6;3;3;42;5;6;"
 # tests -- see bare-prototype.c ---
 run_case bare-prototype "5;"
 
+# --- real C's own function-pointer declarator spelling ("int
+# (*fp)();", vs. this project's own preexisting "int ()* fp;") had no
+# grammar support at all, found via the c-testsuite project's own
+# tests -- see funcptr-c-syntax.c ---
+run_case funcptr-c-syntax "5;3;8;"
+
 echo
 echo "pass=$pass known-diff=$known fail=$fail"
 rm -rf "$SCRATCH"

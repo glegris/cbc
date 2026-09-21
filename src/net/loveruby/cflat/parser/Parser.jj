@@ -332,6 +332,28 @@ public class Parser {
     }
     // #@@}
 
+    // #@@range/FuncPtrDeclarator{
+    // Real C's own function-pointer declarator spelling, e.g.
+    // "int (*fp)(char*, int);" -- the "*" there binds to the
+    // *declarator* ("fp"), wrapped in parens specifically so the
+    // "(char*, int)" right after applies to "*fp" (making fp a
+    // pointer to a function) rather than to the base type "int"
+    // itself (which is how every OTHER postfix modifier here already
+    // works -- see typePostfix(), and this project's own preexisting,
+    // simpler function-pointer spelling, "int (char*, int)* fp;",
+    // which sidesteps this exact parenthesization problem entirely).
+    // Bundles the parsed declarator's name and final type together
+    // since JavaCC productions only have one return value.
+    private static class FuncPtrDeclarator {
+        String name;
+        TypeRef type;
+        FuncPtrDeclarator(String name, TypeRef type) {
+            this.name = name;
+            this.type = type;
+        }
+    }
+    // #@@}
+
     // #@@range/declaratorType{
     // One declarator's own final type in a "T d1, d2, ...;" list: its
     // own array dims (if any -- see withArrayDims()) applied first,
@@ -821,7 +843,7 @@ Declarations top_defs():
     // alternative's variable declarations instead -- this needs the
     // same full syntactic LOOKAHEAD block() already uses for the exact
     // same "is a real IDENTIFIER-as-a-variable-name next" question.
-    | LOOKAHEAD(storage() type() <IDENTIFIER>)
+    | LOOKAHEAD(declaratorLookahead())
       defvars=defvars()     { decls.addDefvars(defvars); }
     | defstruct=defstruct() { decls.addDefstruct(defstruct); }
     | defunion=defunion()   { decls.addDefunion(defunion); }
@@ -861,6 +883,7 @@ List<DefinedVariable> defvars_body():
     TypeNode declType;
     String name;
     List<Long> dims;
+    FuncPtrDeclarator fp;
     ExprNode init = null;
 }
 {
@@ -873,19 +896,31 @@ List<DefinedVariable> defvars_body():
     // whatever the first declarator's own postfix happened to leave
     // behind (e.g. "int *p, q;" -- "q" must come out as plain "int",
     // not "int*") -- see typePostfix()/arraySuffix()/withArrayDims().
-    declRef=typePostfix(coreRef) name=name() dims=arraySuffix()
+    ( LOOKAHEAD(2) fp=funcPtrDeclarator(coreRef)
+        {
+            name = fp.name;
+            declType = declaratorType(fp.type, new ArrayList<Long>(), isConst, isVolatile);
+        }
+    | declRef=typePostfix(coreRef) name=name() dims=arraySuffix()
         {
             declType = declaratorType(declRef, dims, isConst, isVolatile);
         }
+    )
     ["=" init=initializer()]
         {
             defs.add(new DefinedVariable(priv, declType, name, init));
             init = null;
         }
-    ( "," declRef=typePostfix(coreRef) name=name() dims=arraySuffix()
-        {
-            declType = declaratorType(declRef, dims, isConst, isVolatile);
-        }
+    ( "," ( LOOKAHEAD(2) fp=funcPtrDeclarator(coreRef)
+            {
+                name = fp.name;
+                declType = declaratorType(fp.type, new ArrayList<Long>(), isConst, isVolatile);
+            }
+        | declRef=typePostfix(coreRef) name=name() dims=arraySuffix()
+            {
+                declType = declaratorType(declRef, dims, isConst, isVolatile);
+            }
+        )
       ["=" init=initializer()]
         {
             defs.add(new DefinedVariable(priv, declType, name, init));
@@ -1025,6 +1060,27 @@ boolean storage():
 }
 // #@@}
 
+// #@@range/declaratorLookahead{
+// A pure LOOKAHEAD helper -- never invoked as real grammar, only
+// referenced from other productions' own LOOKAHEAD(...) specs (top_defs(),
+// block(), for_stmt()) -- true exactly when the upcoming tokens look
+// like the start of a variable declarator: either the plain "type()
+// <IDENTIFIER>" shape, or a real-C function-pointer declarator's
+// "(*name)" shape (e.g. "int (*fp)();"). typePostfix() can't tell a
+// function-pointer declarator's leading "(" apart from this project's
+// own "(params)" function-type spelling on its own (both start
+// identically), so a caller relying on the plain "type() <IDENTIFIER>"
+// shape alone would wrongly reject a valid function-pointer variable
+// declaration outright, with no other alternative left to claim it --
+// see funcPtrDeclarator()'s own comment for the full story.
+void declaratorLookahead():
+{}
+{
+    storage() type() <IDENTIFIER>
+  | storage() ( <CONST> | <VOLATILE> )* typeref_base() "(" "*"
+}
+// #@@}
+
 // #@@range/storage{
 Params params():
 {
@@ -1085,16 +1141,29 @@ Params fixedparams():
 // still has one, same as a real, named parameter would.
 CBCParameter param():
 {
+    boolean isConst = false;
+    boolean isVolatile = false;
+    TypeRef coreRef;
+    TypeRef declRef;
     TypeNode t;
     String n = null;
     List<Long> dims;
+    FuncPtrDeclarator fp;
 }
 {
-    t=type() [ n=name() ] dims=arraySuffix()
+    ( <CONST> { isConst = true; } | <VOLATILE> { isVolatile = true; } )*
+    coreRef=typeref_base()
+    ( LOOKAHEAD(2) fp=funcPtrDeclarator(coreRef)
         {
-            if (! dims.isEmpty()) {
-                t = new TypeNode(withArrayDims(t.typeRef(), dims));
-            }
+            n = fp.name;
+            t = declaratorType(fp.type, new ArrayList<Long>(), isConst, isVolatile);
+        }
+    | declRef=typePostfix(coreRef) [ n=name() ] dims=arraySuffix()
+        {
+            t = declaratorType(declRef, dims, isConst, isVolatile);
+        }
+    )
+        {
             if (n == null) {
                 n = anonymousParamName();
             }
@@ -1138,7 +1207,7 @@ BlockNode block():
 }
 {
     t="{"
-    ( LOOKAHEAD(storage() type() <IDENTIFIER>)
+    ( LOOKAHEAD(declaratorLookahead())
       declared=defvars()
         {
             vars.addAll(declared);
@@ -1238,16 +1307,29 @@ List<Slot> member_list():
 // #@@range/slot{
 Slot slot():
 {
+    boolean isConst = false;
+    boolean isVolatile = false;
+    TypeRef coreRef;
+    TypeRef declRef;
     TypeNode t;
     String n;
     List<Long> dims;
+    FuncPtrDeclarator fp;
 }
 {
-    t=type() n=name() dims=arraySuffix()
+    ( <CONST> { isConst = true; } | <VOLATILE> { isVolatile = true; } )*
+    coreRef=typeref_base()
+    ( LOOKAHEAD(2) fp=funcPtrDeclarator(coreRef)
         {
-            if (! dims.isEmpty()) {
-                t = new TypeNode(withArrayDims(t.typeRef(), dims));
-            }
+            n = fp.name;
+            t = declaratorType(fp.type, new ArrayList<Long>(), isConst, isVolatile);
+        }
+    | declRef=typePostfix(coreRef) n=name() dims=arraySuffix()
+        {
+            t = declaratorType(declRef, dims, isConst, isVolatile);
+        }
+    )
+        {
             return new Slot(t, n);
         }
 }
@@ -1271,16 +1353,31 @@ UndefinedFunction funcdecl():
 
 UndefinedVariable vardecl():
 {
+    boolean isConst = false;
+    boolean isVolatile = false;
+    TypeRef coreRef;
+    TypeRef declRef;
     TypeNode t;
     String n;
     List<Long> dims;
+    FuncPtrDeclarator fp;
 }
 {
-    <EXTERN> t=type() n=name() dims=arraySuffix() ";"
+    <EXTERN>
+    ( <CONST> { isConst = true; } | <VOLATILE> { isVolatile = true; } )*
+    coreRef=typeref_base()
+    ( LOOKAHEAD(2) fp=funcPtrDeclarator(coreRef)
         {
-            if (! dims.isEmpty()) {
-                t = new TypeNode(withArrayDims(t.typeRef(), dims));
-            }
+            n = fp.name;
+            t = declaratorType(fp.type, new ArrayList<Long>(), isConst, isVolatile);
+        }
+    | declRef=typePostfix(coreRef) n=name() dims=arraySuffix()
+        {
+            t = declaratorType(declRef, dims, isConst, isVolatile);
+        }
+    )
+    ";"
+        {
             return new UndefinedVariable(t, n);
         }
 }
@@ -1369,6 +1466,16 @@ ParamTypeRefs param_typerefs():
 {
       LOOKAHEAD(<VOID> ")")
       <VOID>
+        {
+            return new ParamTypeRefs(new ArrayList<TypeRef>());
+        }
+      // A genuinely empty "()" is the same K&R "unspecified parameter
+      // list" form params() itself already accepts (see its own
+      // comment) -- here it shows up as, e.g., "int (*fptr)();" (a
+      // pointer to a function taking unspecified parameters), by far
+      // the most common way a function-pointer's own type is written
+      // with no parameters at all.
+    | LOOKAHEAD(")")
         {
             return new ParamTypeRefs(new ArrayList<TypeRef>());
         }
@@ -1523,18 +1630,29 @@ TypeRef typeref_base():
 TypedefNode typedef():
 {
     Token t;
+    TypeRef coreRef;
+    TypeRef declRef;
     TypeRef ref;
-    Token newname;
+    String newname;
     List<Long> dims;
+    FuncPtrDeclarator fp;
 }
 {
-    t=<TYPEDEF> ref=typeref() newname=<IDENTIFIER> dims=arraySuffix() ";"
+    t=<TYPEDEF> coreRef=typeref_base()
+    ( LOOKAHEAD(2) fp=funcPtrDeclarator(coreRef)
         {
-            if (! dims.isEmpty()) {
-                ref = withArrayDims(ref, dims);
-            }
-            addType(newname.image);
-            return new TypedefNode(location(t), ref, newname.image);
+            newname = fp.name;
+            ref = fp.type;
+        }
+    | declRef=typePostfix(coreRef) newname=name() dims=arraySuffix()
+        {
+            ref = dims.isEmpty() ? declRef : withArrayDims(declRef, dims);
+        }
+    )
+    ";"
+        {
+            addType(newname);
+            return new TypedefNode(location(t), ref, newname);
         }
 }
 // #@@}
@@ -1667,7 +1785,7 @@ StmtNode for_stmt():
 }
 {
     t=<FOR> "("
-              ( LOOKAHEAD(storage() type() <IDENTIFIER>)
+              ( LOOKAHEAD(declaratorLookahead())
                 initDecls=defvars_body()
               | [init=expr()]
               )
@@ -2106,6 +2224,29 @@ List<Long> arraySuffix():
         { dims.add(new Long(integerValue(t.image))); }
     )*
         { return dims; }
+}
+// #@@}
+
+// #@@range/funcPtrDeclarator{
+// "(*name)(params)" -- see FuncPtrDeclarator's own comment. A real
+// parameter list can never start with a bare "*" (it always starts
+// with a type keyword, an identifier, or -- for "(void)" -- "void"
+// itself), so a caller only needs a plain 2-token LOOKAHEAD ("(" "*")
+// to know this is coming, with no risk of confusing it with this
+// project's own "(params)"-then-"*" function-pointer spelling that
+// typePostfix() already handles (that one never has a "*" as the
+// *first* thing after the "(").
+FuncPtrDeclarator funcPtrDeclarator(TypeRef returnType):
+{
+    String n;
+    ParamTypeRefs ps;
+}
+{
+    "(" "*" n=name() ")" "(" ps=param_typerefs() ")"
+        {
+            return new FuncPtrDeclarator(n,
+                    new PointerTypeRef(new FunctionTypeRef(returnType, ps)));
+        }
 }
 // #@@}
 
