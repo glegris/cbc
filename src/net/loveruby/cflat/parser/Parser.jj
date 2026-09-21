@@ -289,6 +289,47 @@ public class Parser {
     }
     // #@@}
 
+    // #@@range/withArrayDims{
+    // A real C declarator's own "[N]"/"[]" suffixes attach to the
+    // *name* being declared, not to the type keyword before it (unlike
+    // "*", which -- in this grammar's simplified declarator syntax --
+    // always sits right after the type keyword and before the name, so
+    // typeref()'s own postfix loop already handles it there). This
+    // builds the actual array type once arraySuffix() has collected
+    // each "[N]"/"[]" a declarator wrote, left-to-right as written
+    // (e.g. "arr[2][3]" -> [2, 3]), nesting them innermost-last so the
+    // result is genuinely "array of 2 (array of 3 (elemType))", not
+    // the other way around.
+    private TypeRef withArrayDims(TypeRef elementType, List<Long> dims) {
+        TypeRef ref = elementType;
+        for (int i = dims.size() - 1; i >= 0; i--) {
+            Long dim = dims.get(i);
+            ref = (dim == null) ? new ArrayTypeRef(ref) : new ArrayTypeRef(ref, dim);
+        }
+        return ref;
+    }
+    // #@@}
+
+    // #@@range/declaratorType{
+    // One declarator's own final type in a "T d1, d2, ...;" list: its
+    // own array dims (if any -- see withArrayDims()) applied first,
+    // then any "const"/"volatile" shared by the whole declaration --
+    // matching the order type() itself already used (qualifying the
+    // *whole* type, e.g. "T *p" becoming a const pointer rather than a
+    // pointer to const T; a pre-existing simplification, not something
+    // this per-declarator handling changes).
+    private TypeNode declaratorType(TypeRef ref, List<Long> dims,
+            boolean isConst, boolean isVolatile) {
+        if (! dims.isEmpty()) {
+            ref = withArrayDims(ref, dims);
+        }
+        if (isConst || isVolatile) {
+            ref = new QualifiedTypeRef(ref, isConst, isVolatile);
+        }
+        return new TypeNode(ref);
+    }
+    // #@@}
+
     // #@@range/characterCode{
     private long characterCode(String image) throws ParseException {
         String s = stringValue(image);
@@ -782,19 +823,41 @@ List<DefinedVariable> defvars_body():
 {
     List<DefinedVariable> defs = new ArrayList<DefinedVariable>();
     boolean priv;
-    TypeNode type;
+    boolean isConst = false;
+    boolean isVolatile = false;
+    TypeRef coreRef;
+    TypeRef declRef;
+    TypeNode declType;
     String name;
+    List<Long> dims;
     ExprNode init = null;
 }
 {
-    priv=storage() type=type() name=name() ["=" init=initializer()]
+    priv=storage()
+    ( <CONST> { isConst = true; } | <VOLATILE> { isVolatile = true; } )*
+    coreRef=typeref_base()
+    // Each declarator in a "T d1, d2, ...;" comma list re-applies its
+    // *own* "*"/"[N]"/"[]" to the same shared base type ("coreRef"),
+    // instead of every declarator after the first blindly inheriting
+    // whatever the first declarator's own postfix happened to leave
+    // behind (e.g. "int *p, q;" -- "q" must come out as plain "int",
+    // not "int*") -- see typePostfix()/arraySuffix()/withArrayDims().
+    declRef=typePostfix(coreRef) name=name() dims=arraySuffix()
         {
-            defs.add(new DefinedVariable(priv, type, name, init));
+            declType = declaratorType(declRef, dims, isConst, isVolatile);
+        }
+    ["=" init=initializer()]
+        {
+            defs.add(new DefinedVariable(priv, declType, name, init));
             init = null;
         }
-    ( "," name=name() ["=" init=initializer()]
+    ( "," declRef=typePostfix(coreRef) name=name() dims=arraySuffix()
         {
-            defs.add(new DefinedVariable(priv, type, name, init));
+            declType = declaratorType(declRef, dims, isConst, isVolatile);
+        }
+      ["=" init=initializer()]
+        {
+            defs.add(new DefinedVariable(priv, declType, name, init));
             init = null;
         }
     )*
@@ -967,9 +1030,16 @@ CBCParameter param():
 {
     TypeNode t;
     String n;
+    List<Long> dims;
 }
 {
-    t=type() n=name() { return new CBCParameter(t, n); }
+    t=type() n=name() dims=arraySuffix()
+        {
+            if (! dims.isEmpty()) {
+                t = new TypeNode(withArrayDims(t.typeRef(), dims));
+            }
+            return new CBCParameter(t, n);
+        }
 }
 // #@@}
 
@@ -1075,11 +1145,15 @@ Declarations defenum():
     memberName=name()
         { names.add(memberName); values.add(null); }
     [ "=" memberValue=expr() { values.set(values.size() - 1, memberValue); } ]
-    ( ","
+    ( LOOKAHEAD(2) ","
       memberName=name()
         { names.add(memberName); values.add(null); }
       [ "=" memberValue=expr() { values.set(values.size() - 1, memberValue); } ]
     )*
+    // C99 6.7.2.2p1 explicitly allows one trailing "," after the last
+    // enumerator ("enum E { x, y, z, };"), same as an array/struct
+    // aggregate literal already does elsewhere in this grammar.
+    [ "," ]
     "}" ";"
         {
             return buildEnumDecls(location(t), n, names, values);
@@ -1106,9 +1180,16 @@ Slot slot():
 {
     TypeNode t;
     String n;
+    List<Long> dims;
 }
 {
-    t=type() n=name() { return new Slot(t, n); }
+    t=type() n=name() dims=arraySuffix()
+        {
+            if (! dims.isEmpty()) {
+                t = new TypeNode(withArrayDims(t.typeRef(), dims));
+            }
+            return new Slot(t, n);
+        }
 }
 // #@@}
 
@@ -1132,10 +1213,14 @@ UndefinedVariable vardecl():
 {
     TypeNode t;
     String n;
+    List<Long> dims;
 }
 {
-    <EXTERN> t=type() n=name() ";"
+    <EXTERN> t=type() n=name() dims=arraySuffix() ";"
         {
+            if (! dims.isEmpty()) {
+                t = new TypeNode(withArrayDims(t.typeRef(), dims));
+            }
             return new UndefinedVariable(t, n);
         }
 }
@@ -1163,11 +1248,32 @@ TypeNode type():
 TypeRef typeref():
 {
     TypeRef ref;
+}
+{
+    ref=typeref_base()
+    ref=typePostfix(ref)
+        {
+            return ref;
+        }
+}
+// #@@}
+
+// #@@range/typePostfix{
+// The "[]"/"[N]"/"*"/"(params)" modifiers that can follow a base type
+// keyword directly (e.g. "int *", "int[]", this project's own
+// "int (char*)*" function-pointer spelling -- see funcptr.c). Factored
+// out of typeref() so a single declarator (in a "T d1, d2, ...;" list)
+// can re-apply it to the *same* shared base type instead of every
+// declarator after the first blindly inheriting whatever the first
+// declarator's own "*"/(...)" happened to leave in "ref" (e.g.
+// "int *p, q;" -- "q" must come out as plain "int", not "int*").
+TypeRef typePostfix(TypeRef base):
+{
+    TypeRef ref = base;
     Token t;
     ParamTypeRefs params;
 }
 {
-    ref=typeref_base()
     ( LOOKAHEAD(2)
       "[" "]"
         {
@@ -1321,10 +1427,14 @@ TypedefNode typedef():
     Token t;
     TypeRef ref;
     Token newname;
+    List<Long> dims;
 }
 {
-    t=<TYPEDEF> ref=typeref() newname=<IDENTIFIER> ";"
+    t=<TYPEDEF> ref=typeref() newname=<IDENTIFIER> dims=arraySuffix() ";"
         {
+            if (! dims.isEmpty()) {
+                ref = withArrayDims(ref, dims);
+            }
             addType(newname.image);
             return new TypedefNode(location(t), ref, newname.image);
         }
@@ -1878,6 +1988,26 @@ String name():
 { Token t; }
 {
     t=<IDENTIFIER> { return t.image; }
+}
+// #@@}
+
+// #@@range/arraySuffix{
+// Zero or more "[N]"/"[]" groups directly after a declared name (e.g.
+// "arr[2]", "matrix[2][3]", a bare "flexible[]" as the last struct
+// member) -- see withArrayDims() for why this can't just live inside
+// typeref()'s own postfix loop, which runs *before* the name.
+List<Long> arraySuffix():
+{
+    List<Long> dims = new ArrayList<Long>();
+    Token t;
+}
+{
+    ( LOOKAHEAD(2) "[" "]"
+        { dims.add(null); }
+    | "[" t=<INTEGER> "]"
+        { dims.add(new Long(integerValue(t.image))); }
+    )*
+        { return dims; }
 }
 // #@@}
 

@@ -296,6 +296,24 @@ run_case int-suffix-case "100;5;7;100;5;100;"
 # c-testsuite project's own tests -- see type-specifiers.c ---
 run_case type-specifiers "-1;1;-2;100000;30000;4000000000;60000;100;-100;"
 
+# --- a declarator's own "[N]"/"[]" array suffix (attaching to the
+# *name*, e.g. "int arr[2];") had no grammar support at all outside of
+# a typeref() context (a parameter/cast/sizeof spelling), found via
+# the c-testsuite project's own tests -- see array-decl.c ---
+run_case array-decl "3;7;30;15;6;8;"
+
+# --- each declarator in a "T d1, d2, ...;" comma list must get its
+# own pointer level, not blindly inherit the first declarator's own
+# "*" (e.g. "int *p, q;" -- "q" must be plain "int", not "int*"),
+# found via the c-testsuite project's own tests -- see
+# multi-declarator.c ---
+run_case multi-declarator "5;10;4;1;1;1;"
+
+# --- a trailing "," after an enum's last enumerator (C99 6.7.2.2p1)
+# was rejected, found via the c-testsuite project's own tests -- see
+# enum-trailing-comma.c ---
+run_case enum-trailing-comma "0;1;2;1;"
+
 echo
 echo "pass=$pass known-diff=$known fail=$fail"
 rm -rf "$SCRATCH"
