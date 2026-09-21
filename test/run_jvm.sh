@@ -327,6 +327,13 @@ run_case array-size-inference "4;5;4;55;3;16;0;20;"
 # see tentative-definition.c ---
 run_case tentative-definition "3;0;"
 
+# --- a struct/union tag has always been optional (since K&R): "struct
+# { ... } v;" and "struct Name { ... } v;" (a real tag, defined right
+# where it's first used as a type) had no grammar support as a
+# variable's own type, found via the c-testsuite project's own tests --
+# see anonymous-struct.c ---
+run_case anonymous-struct "6;3;3;42;5;6;"
+
 echo
 echo "pass=$pass known-diff=$known fail=$fail"
 rm -rf "$SCRATCH"

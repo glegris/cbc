@@ -310,6 +310,17 @@ public class Parser {
     }
     // #@@}
 
+    // #@@range/anonymousTagName{
+    private int anonTagSeq = 0;
+
+    private String anonymousTagName() {
+        // "$" can't appear in a real identifier (see <IDENTIFIER>'s own
+        // token definition) or in a source-level struct/union tag, so
+        // this can never collide with, or be written by, actual source.
+        return "$anon_tag" + (anonTagSeq++);
+    }
+    // #@@}
+
     // #@@range/declaratorType{
     // One declarator's own final type in a "T d1, d2, ...;" list: its
     // own array dims (if any -- see withArrayDims()) applied first,
@@ -790,7 +801,20 @@ Declarations top_defs():
       vardecl=vardecl()     { decls.addVardecl(vardecl); }
     | LOOKAHEAD(<CONST> type() <IDENTIFIER> "=")
       defconst=defconst()   { decls.addConstant(defconst); }
-    | LOOKAHEAD(3)
+    // A bare numeric LOOKAHEAD(3) used to sit here, silently relying on
+    // "struct"/"union" never being able to complete a valid typeref()
+    // match within 3 tokens -- true only as long as neither ever took
+    // a body ("struct Name {" was always a dead end for defvars(),
+    // since the 3rd token "{" can't be the IDENTIFIER a variable name
+    // needs there). Once typeref_base() learned to accept "struct { ...
+    // }"/"struct Name { ... }" as an inline type (see there), that
+    // numeric shortcut started wrongly claiming a *plain* struct/union
+    // *definition* statement ("struct S { ... };", meant for
+    // defstruct()/defunion() below) as if it might be one of THIS
+    // alternative's variable declarations instead -- this needs the
+    // same full syntactic LOOKAHEAD block() already uses for the exact
+    // same "is a real IDENTIFIER-as-a-variable-name next" question.
+    | LOOKAHEAD(storage() type() <IDENTIFIER>)
       defvars=defvars()     { decls.addDefvars(defvars); }
     | defstruct=defstruct() { decls.addDefstruct(defstruct); }
     | defunion=defunion()   { decls.addDefunion(defunion); }
@@ -1350,14 +1374,52 @@ ParamTypeRefs fixedparam_typerefs():
 TypeRef typeref_base():
 {
     Token t, name;
+    List<Slot> membs;
 }
 {
       t=<VOID>          { return new VoidTypeRef(location(t)); }
     | t=<FLOAT>         { return FloatTypeRef.floatRef(location(t)); }
     | t=<DOUBLE>        { return FloatTypeRef.doubleRef(location(t)); }
     | t=<BOOL_>         { return IntegerTypeRef.boolRef(location(t)); }
+    // "struct { ... }" (no tag at all -- a struct/union tag has always
+    // been optional, since K&R) and "struct Name { ... }" (a real tag,
+    // but defined right where it's first used as a type, e.g. "struct
+    // S { int x; } v;") both define the struct as a side effect of
+    // being used as a type here, exactly like a local struct/union
+    // definition inside a function body already does (see block()) --
+    // hoisted into topDecls the same way, registered under a
+    // synthesized name if the source gave none. Plain numeric
+    // LOOKAHEADs (not a production call) on purpose: this exact
+    // production once broke badly (see git history) from a syntactic
+    // LOOKAHEAD calling into another production nearby.
+    | LOOKAHEAD(2) t=<STRUCT> membs=member_list()
+        {
+            String n = anonymousTagName();
+            topDecls.addDefstruct(new StructNode(location(t),
+                    new StructTypeRef(n), n, membs));
+            return new StructTypeRef(location(t), n);
+        }
+    | LOOKAHEAD(3) t=<STRUCT> name=<IDENTIFIER> membs=member_list()
+        {
+            topDecls.addDefstruct(new StructNode(location(t),
+                    new StructTypeRef(name.image), name.image, membs));
+            return new StructTypeRef(location(t), name.image);
+        }
     | t=<STRUCT> name=<IDENTIFIER>
         { return new StructTypeRef(location(t), name.image); }
+    | LOOKAHEAD(2) t=<UNION> membs=member_list()
+        {
+            String n = anonymousTagName();
+            topDecls.addDefunion(new UnionNode(location(t),
+                    new UnionTypeRef(n), n, membs));
+            return new UnionTypeRef(location(t), n);
+        }
+    | LOOKAHEAD(3) t=<UNION> name=<IDENTIFIER> membs=member_list()
+        {
+            topDecls.addDefunion(new UnionNode(location(t),
+                    new UnionTypeRef(name.image), name.image, membs));
+            return new UnionTypeRef(location(t), name.image);
+        }
     | t=<UNION> name=<IDENTIFIER>
         { return new UnionTypeRef(location(t), name.image); }
     | t=<ENUM> name=<IDENTIFIER>
