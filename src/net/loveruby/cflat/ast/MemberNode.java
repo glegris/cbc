@@ -33,6 +33,10 @@ public class MemberNode extends LHSNode {
         return baseType().memberOffset(member);
     }
 
+    public Slot slot() {
+        return baseType().get(member);
+    }
+
     protected Type origType() {
         return baseType().memberType(member);
     }

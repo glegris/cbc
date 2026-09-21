@@ -45,6 +45,10 @@ public class PtrMemberNode extends LHSNode {
         return dereferedCompositeType().memberOffset(member);
     }
 
+    public Slot slot() {
+        return dereferedCompositeType().get(member);
+    }
+
     protected Type origType() {
         return dereferedCompositeType().memberType(member);
     }

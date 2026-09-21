@@ -522,6 +522,12 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
 
     // #@@range/Assign{
     public Expr visit(AssignNode node) {
+        if (bitFieldSlot(node.lhs()) != null) {
+            // Evaluate RHS before LHS, matching the plain-member case
+            // below.
+            Expr rhs = transformExpr(node.rhs());
+            return transformBitFieldRMW(node.location(), node.lhs(), null, rhs, false);
+        }
         Location lloc = node.lhs().location();
         Location rloc = node.rhs().location();
         if (isStatement()) {
@@ -546,6 +552,14 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
 
     // #@@range/OpAssign{
     public Expr visit(OpAssignNode node) {
+        if (bitFieldSlot(node.lhs()) != null) {
+            // Evaluate RHS before LHS, matching the plain-member case
+            // below.
+            Expr rhs = transformExpr(node.rhs());
+            Type t = node.lhs().type();
+            Op op = Op.internBinary(node.operator(), t.isSigned());
+            return transformBitFieldRMW(node.location(), node.lhs(), op, rhs, false);
+        }
         // Evaluate RHS before LHS.
         Expr rhs = transformExpr(node.rhs());
         Expr lhs = transformExpr(node.lhs());
@@ -558,6 +572,10 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
     public Expr visit(PrefixOpNode node) {
         // ++expr -> expr += 1
         Type t = node.expr().type();
+        if (bitFieldSlot(node.expr()) != null) {
+            return transformBitFieldRMW(node.location(), node.expr(),
+                    binOp(node.operator()), imm(t, 1), false);
+        }
         return transformOpAssign(node.location(),
                 binOp(node.operator()), t,
                 transformExpr(node.expr()), imm(t, 1));
@@ -565,6 +583,14 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
 
     // #@@range/SuffixOp{
     public Expr visit(SuffixOpNode node) {
+        if (bitFieldSlot(node.expr()) != null) {
+            // expr++ -> return the field's own *pre*-modification value
+            // (truncated/sign-extended the same way a read always is),
+            // per C's usual postfix-operator semantics.
+            Type ft = node.expr().type();
+            return transformBitFieldRMW(node.location(), node.expr(),
+                    binOp(node.operator()), imm(ft, 1), true);
+        }
         // #@@range/SuffixOp_init{
         Expr expr = transformExpr(node.expr());
         Type t = node.expr().type();
@@ -613,6 +639,122 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
             assign(loc, mem(a), bin(op, lhsType, mem(a), rhs));
             return isStatement() ? null : mem(a);
         }
+    }
+    // #@@}
+
+    // #@@range/BitField{
+    // A bit-field's own Slot, if "node" is a "."/"->" access naming one
+    // -- null for anything else (an ordinary member, or a completely
+    // different kind of expression), so every call site below can
+    // treat "null" as "handle this the normal way" and fall through
+    // unchanged.
+    private Slot bitFieldSlot(ExprNode node) {
+        Slot slot;
+        if (node instanceof MemberNode) {
+            slot = ((MemberNode)node).slot();
+        }
+        else if (node instanceof PtrMemberNode) {
+            slot = ((PtrMemberNode)node).slot();
+        }
+        else {
+            return null;
+        }
+        return (slot != null && slot.isBitField()) ? slot : null;
+    }
+
+    // The address of the *storage unit* a bit-field access's own Slot
+    // says it shares with its sibling bit-fields (see
+    // StructType#computeOffsets()) -- same address computation as the
+    // plain, non-bit-field branch of visit(MemberNode)/
+    // visit(PtrMemberNode), just factored out so transformBitFieldRMW()
+    // can compute it once and reuse it for the read-modify-write it
+    // needs (visit(MemberNode) itself only ever needs it once, for a
+    // plain read).
+    private Expr bitFieldUnitAddr(ExprNode node) {
+        if (node instanceof MemberNode) {
+            MemberNode m = (MemberNode)node;
+            return new Bin(ptr_t(), Op.ADD,
+                    addressOf(transformExpr(m.expr())), ptrdiff(m.offset()));
+        }
+        else {
+            PtrMemberNode m = (PtrMemberNode)node;
+            return new Bin(ptr_t(), Op.ADD,
+                    transformExpr(m.expr()), ptrdiff(m.offset()));
+        }
+    }
+
+    // Reads a bit-field's own value back out of its shared storage
+    // unit: shifts the field up so its own top bit lands on the unit's
+    // own top bit, then back down by the same amount. Using the unit's
+    // own signedness for that final shift sign-extends a signed
+    // bit-field and zero-extends an unsigned one for free, with no
+    // separate mask ever needed on this side.
+    private Expr extractBitField(Expr unit, Slot slot) {
+        Type unitType = slot.type();
+        long unitBits = unitType.size() * 8;
+        long width = slot.bitWidth();
+        long bitOffset = slot.bitOffset();
+        long leftShift = unitBits - bitOffset - width;
+        long rightShift = unitBits - width;
+        Expr shiftedUp = (leftShift == 0) ? unit
+                : bin(Op.BIT_LSHIFT, unitType, unit, imm(typeTable.signedInt(), leftShift));
+        Op rshiftOp = unitType.isSigned() ? Op.ARITH_RSHIFT : Op.BIT_RSHIFT;
+        return (rightShift == 0) ? shiftedUp
+                : bin(rshiftOp, unitType, shiftedUp, imm(typeTable.signedInt(), rightShift));
+    }
+
+    // Read-modify-write for a bit-field assignment/compound-assignment/
+    // increment ("f.bits = v", "f.bits += v", "f.bits++", ...): unlike
+    // an ordinary member, a bit-field's storage unit is shared with its
+    // sibling bit-fields, so a write can never just overwrite the whole
+    // unit -- it has to clear only the field's own bits and OR the new
+    // value (truncated to the field's own width) back in.
+    //
+    // "op" is null for a plain "=" (the new value is "rhs" as-is);
+    // otherwise the field's own current value is combined with "rhs"
+    // via "op" first, the same "*a = *a OP rhs" shape transformOpAssign
+    // itself already uses for a plain member. "returnPreModifyValue" is
+    // for "expr++"/"expr--": true to hand back the field's value from
+    // *before* this modification, matching C's usual postfix semantics
+    // (transformOpAssign's own equivalent, "cont(expr++) -> v = expr;
+    // expr = v + 1; cont(v)", doesn't apply here since a bit-field is
+    // never itself a plain addressable variable/*a the way that
+    // pattern relies on).
+    private Expr transformBitFieldRMW(Location loc, ExprNode lhsNode,
+            Op op, Expr rhs, boolean returnPreModifyValue) {
+        Slot slot = bitFieldSlot(lhsNode);
+        Type unitType = slot.type();
+        long width = slot.bitWidth();
+        long bitOffset = slot.bitOffset();
+        long mask = (width >= 64) ? -1L : ((1L << width) - 1);
+
+        DefinedVariable a = tmpVar(pointerTo(unitType));
+        assign(loc, ref(a), bitFieldUnitAddr(lhsNode));
+
+        Expr preValue = null;
+        if (returnPreModifyValue && ! isStatement()) {
+            DefinedVariable v = tmpVar(unitType);
+            assign(loc, ref(v), extractBitField(mem(a), slot));
+            preValue = ref(v);
+        }
+
+        Expr newValue = (op == null) ? rhs
+                : bin(op, unitType, extractBitField(mem(a), slot), rhs);
+        Expr truncated = bin(Op.BIT_AND, unitType, newValue, imm(unitType, mask));
+        Expr shiftedIn = (bitOffset == 0) ? truncated
+                : bin(Op.BIT_LSHIFT, unitType, truncated, imm(typeTable.signedInt(), bitOffset));
+        long clearMask = ~(mask << bitOffset);
+        Expr cleared = bin(Op.BIT_AND, unitType, mem(a), imm(unitType, clearMask));
+        Expr combined = bin(Op.BIT_OR, unitType, cleared, shiftedIn);
+        assign(loc, mem(a), combined);
+
+        if (isStatement()) return null;
+        if (returnPreModifyValue) return preValue;
+        // The assignment/compound-assignment's own value is the field's
+        // value as actually stored -- i.e. truncated, and (for a signed
+        // field) sign-extended -- so read it back the same way a plain
+        // reference to the field always would.
+        return extractBitField(mem(a), slot);
     }
     // #@@}
 
@@ -736,6 +878,12 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
 
     // #@@range/Member{
     public Expr visit(MemberNode node) {
+        Slot slot = node.slot();
+        if (slot != null && slot.isBitField()) {
+            Expr addr = new Bin(ptr_t(), Op.ADD,
+                    addressOf(transformExpr(node.expr())), ptrdiff(node.offset()));
+            return extractBitField(mem(addr, slot.type()), slot);
+        }
         Expr expr = addressOf(transformExpr(node.expr()));
         Expr offset = ptrdiff(node.offset());
         Expr addr = new Bin(ptr_t(), Op.ADD, expr, offset);
@@ -747,6 +895,12 @@ class IRGenerator implements ASTVisitor<Void, Expr> {
 
     // #@@range/PtrMember{
     public Expr visit(PtrMemberNode node) {
+        Slot slot = node.slot();
+        if (slot != null && slot.isBitField()) {
+            Expr addr = new Bin(ptr_t(), Op.ADD,
+                    transformExpr(node.expr()), ptrdiff(node.offset()));
+            return extractBitField(mem(addr, slot.type()), slot);
+        }
         Expr expr = transformExpr(node.expr());
         Expr offset = ptrdiff(node.offset());
         Expr addr = new Bin(ptr_t(), Op.ADD, expr, offset);

@@ -78,6 +78,45 @@ public class TypeResolver extends Visitor
         }
         for (Slot s : ct.members()) {
             bindType(s.typeNode());
+            if (s.isBitField()) {
+                checkBitField(s);
+            }
+        }
+    }
+    // #@@}
+
+    // #@@range/checkBitField{
+    // C99 6.7.2.1p4/p9: a bit-field's own base type must be an integer
+    // type, and its width can't exceed that type's own full bit width
+    // (a run of same-typed bit-fields is later *packed* together by
+    // StructType#computeOffsets(), but the field's own individual
+    // width is still bounded by its declared type -- "unsigned char x
+    // : 9;" makes no more sense here than in real C). Restricted to a
+    // storage unit no wider than "int" (4 bytes): IRGenerator's own
+    // bit-field read/write masks are built as plain 32-bit immediates,
+    // matching int_t()'s own width, and the standard itself only ever
+    // requires "_Bool"/"signed int"/"unsigned int" to work as a
+    // bit-field's base type anyway (wider bases are a well-known GNU
+    // extension, out of scope here).
+    private void checkBitField(Slot s) {
+        Type t = s.type();
+        if (! t.isInteger()) {
+            error(s, "invalid bit-field type (must be an integer type): " + t);
+            return;
+        }
+        if (t.size() > 4) {
+            error(s, "bit-field base type is too wide (must be at most 4 "
+                    + "bytes): " + t);
+            return;
+        }
+        long width = s.bitWidth();
+        if (width < 0) {
+            error(s, "bit-field width cannot be negative: " + width);
+            return;
+        }
+        if (width > t.size() * 8) {
+            error(s, "bit-field width (" + width + ") exceeds the width of "
+                    + "its own type " + t + " (" + (t.size() * 8) + " bits)");
         }
     }
     // #@@}

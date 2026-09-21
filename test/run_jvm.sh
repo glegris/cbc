@@ -352,6 +352,11 @@ run_case funcptr-c-syntax "5;3;8;"
 # contributing nothing -- see flexible-array-member.c ---
 run_case flexible-array-member "4;5;100;8;"
 
+# --- bit-fields ("unsigned int a : 3;") had no grammar support at
+# all -- see bitfield.c for the read/write/packing/sign-extension
+# cases this covers ---
+run_case bitfield "0;7;7;-1;-8;65;0;1234;0;100000;1234;1234;5678;1234;"
+
 echo
 echo "pass=$pass known-diff=$known fail=$fail"
 rm -rf "$SCRATCH"

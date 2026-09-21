@@ -332,6 +332,19 @@ public class Parser {
     }
     // #@@}
 
+    // #@@range/anonymousFieldName{
+    private int anonFieldSeq = 0;
+
+    private String anonymousFieldName() {
+        // Same reasoning as anonymousParamName() -- an unnamed
+        // bit-field ("unsigned : 3;") is pure padding, never itself
+        // accessible, so a synthesized "$"-prefixed name (which can
+        // never collide with, or be written by, actual source) just
+        // needs to exist, not be seen.
+        return "$anon_field" + (anonFieldSeq++);
+    }
+    // #@@}
+
     // #@@range/FuncPtrDeclarator{
     // Real C's own function-pointer declarator spelling, e.g.
     // "int (*fp)(char*, int);" -- the "*" there binds to the
@@ -1315,6 +1328,8 @@ Slot slot():
     String n;
     List<Long> dims;
     FuncPtrDeclarator fp;
+    Token widthTok;
+    long width = -1;
 }
 {
     ( <CONST> { isConst = true; } | <VOLATILE> { isVolatile = true; } )*
@@ -1324,13 +1339,34 @@ Slot slot():
             n = fp.name;
             t = declaratorType(fp.type, new ArrayList<Long>(), isConst, isVolatile);
         }
+    // An unnamed bit-field ("unsigned : 3;") is pure padding -- it
+    // reserves space in the shared storage unit (see
+    // StructType#computeOffsets()) but is never itself accessible; a
+    // synthesized name (matching anonymousParamName()'s own reasoning)
+    // keeps it out of the ordinary member namespace. Distinguishable
+    // from every other alternative here with a plain single-token
+    // LOOKAHEAD: none of them can otherwise start with ":".
+    | ":" widthTok=<INTEGER>
+        {
+            n = anonymousFieldName();
+            width = integerValue(widthTok.image);
+            t = declaratorType(coreRef, new ArrayList<Long>(), isConst, isVolatile);
+        }
     | declRef=typePostfix(coreRef) n=name() dims=arraySuffix()
+      // The field's own width in bits (C99 6.7.2.1) -- deliberately a
+      // plain integer literal rather than a general constant
+      // expression, matching this grammar's existing "array size must
+      // be a literal" simplification for the same reason (evaluating
+      // an arbitrary constant expression this early, before the rest
+      // of name/constant resolution has run, isn't straightforward).
+      [ ":" widthTok=<INTEGER> { width = integerValue(widthTok.image); } ]
         {
             t = declaratorType(declRef, dims, isConst, isVolatile);
         }
     )
         {
-            return new Slot(t, n);
+            return (width == -1)
+                    ? new Slot(t, n) : new Slot(t, n, width);
         }
 }
 // #@@}
