@@ -385,10 +385,12 @@ class TypeChecker extends Visitor {
         else if (node.operator().equals("%")
                 || node.operator().equals("&")
                 || node.operator().equals("|")
-                || node.operator().equals("^")
-                || node.operator().equals("<<")
-                || node.operator().equals(">>")) {
+                || node.operator().equals("^")) {
             expectsSameInteger(node);
+        }
+        else if (node.operator().equals("<<")
+                || node.operator().equals(">>")) {
+            expectsShiftableIntegers(node);
         }
         else if (node.operator().equals("==")
                 || node.operator().equals("!=")
@@ -466,7 +468,7 @@ class TypeChecker extends Visitor {
         }
     }
 
-    // %, &, |, ^, <<, >>
+    // %, &, |, ^
     // #@@range/expectsSameInteger{
     private void expectsSameInteger(BinaryOpNode node) {
         if (! mustBeInteger(node.left(), node.operator())) return;
@@ -474,6 +476,39 @@ class TypeChecker extends Visitor {
         arithmeticImplicitCast(node);
     }
     // #@@}
+
+    // <<, >>
+    private void expectsShiftableIntegers(BinaryOpNode node) {
+        if (! mustBeInteger(node.left(), node.operator())) return;
+        if (! mustBeInteger(node.right(), node.operator())) return;
+        shiftImplicitCast(node);
+    }
+
+    // Unlike every other binary integer operator, a shift's two
+    // operands are NOT subject to "usual arithmetic conversion"
+    // against each other at all (C99 6.5.7p3): "the integer promotions
+    // are performed on each of the operands [independently]. The type
+    // of the result is that of the promoted left operand." So
+    // "(short)1 << (long long)1" has type "int" (short's own
+    // promotion), not "long long", even though the right operand is
+    // wider -- reusing arithmeticImplicitCast()'s "widest operand
+    // wins" logic here (as an earlier version of this code did, having
+    // originally treated "<<"/">>" exactly like "%"/"&"/"|"/"^", which
+    // genuinely do need the two operands unified to a common type)
+    // would silently widen the result to match a wider *right* operand
+    // that the standard says must never influence the result's type at
+    // all.
+    private void shiftImplicitCast(BinaryOpNode node) {
+        Type l = arithPromotion(node.left().type());
+        Type r = arithPromotion(node.right().type());
+        if (! node.left().type().isSameType(l)) {
+            node.setLeft(new CastNode(l, node.left()));
+        }
+        if (! node.right().type().isSameType(r)) {
+            node.setRight(new CastNode(r, node.right()));
+        }
+        node.setType(l);
+    }
 
     // +, -, *, / (integer or floating)
     private void expectsSameArithmetic(BinaryOpNode node) {
@@ -552,17 +587,46 @@ class TypeChecker extends Visitor {
     public Void visit(UnaryOpNode node) {
         super.visit(node);
         if (node.operator().equals("!")) {
+            // "!"'s own result is always a plain 0/1 "int" regardless
+            // of its operand's type (any scalar, unpromoted -- it's
+            // just tested for zero/nonzero, never itself computed at a
+            // wider width), so unlike +/-/~ below, this needs no
+            // promotion at all.
             mustBeScalar(node.expr(), node.operator());
         }
         else if (node.operator().equals("-") || node.operator().equals("+")) {
             // Unary +/- accept a float/double operand too (~ doesn't:
             // bitwise-not is integer-only).
-            mustBeArithmetic(node.expr(), node.operator());
+            if (mustBeArithmetic(node.expr(), node.operator())) {
+                promoteUnaryOperand(node);
+            }
         }
         else {
-            mustBeInteger(node.expr(), node.operator());
+            if (mustBeInteger(node.expr(), node.operator())) {
+                promoteUnaryOperand(node);
+            }
         }
         return null;
+    }
+
+    // C99 6.5.3.3p1: unary +/-/~ each apply integer promotion to their
+    // operand (a no-op for +/- on a float/double operand -- see
+    // arithPromotion()), and the expression's own type is that
+    // promoted type. UnaryOpNode#type() just proxies its own expr's
+    // type, so materializing the promotion as a cast on that expr --
+    // exactly like arithmeticImplicitCast() already does for binary
+    // operators, and for the identical reason: skipping the cast
+    // whenever the promoted type happens to already equal the
+    // *original* type would be fine, but skipping it just because
+    // nothing else compares it to another value here would leave a
+    // below-int operand (e.g. "-((unsigned short)x)") computed at its
+    // original narrow width instead of at "int" -- is enough to fix
+    // both the reported type and the actual computed value.
+    private void promoteUnaryOperand(UnaryOpNode node) {
+        Type t = arithPromotion(node.expr().type());
+        if (! node.expr().type().isSameType(t)) {
+            node.setExpr(new CastNode(t, node.expr()));
+        }
     }
 
     // ++x, --x

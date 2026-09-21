@@ -265,6 +265,11 @@ run_case arith-conversion "1;255;37;1;"
 # operator-precedence.c's own comments ---
 run_case operator-precedence "0;1;0;1;5;"
 
+# --- unary +/-/~ must apply integer promotion to their operand
+# (C99 6.5.3.3p1), found via the c-testsuite project's own tests --
+# see unary-promotion.c's own comments ---
+run_case unary-promotion "1;1;1;1;"
+
 echo
 echo "pass=$pass known-diff=$known fail=$fail"
 rm -rf "$SCRATCH"
