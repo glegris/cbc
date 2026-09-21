@@ -834,6 +834,23 @@ Params params():
         {
             return new Params(location(t), new ArrayList<CBCParameter>());
         }
+      // A genuinely empty "()" -- as opposed to "(void)" -- is C89/C99's
+      // own "unspecified parameter list" form (K&R's own, in fact): for a
+      // function *definition* specifically (as opposed to a standalone
+      // declaration), the standard says this means "takes no parameters"
+      // (C99 6.7.5.3p14), exactly like "(void)"; this compiler treats it
+      // that way uniformly for both a definition and a bare declaration
+      // (rather than tracking the K&R distinction where a declaration's
+      // "()" leaves call-site argument count/types unchecked), since
+      // that's what every caller of a cflat function already needs
+      // anyway. Without this, "int f() { ... }" -- extremely common,
+      // idiomatic C, including "main()" itself -- failed to parse at
+      // all: params() had no alternative at all for an empty list, only
+      // "(void)" or "(at least one parameter)".
+    | LOOKAHEAD(")")
+        {
+            return new Params(location(getToken(1)), new ArrayList<CBCParameter>());
+        }
     | params=fixedparams()
             ["," "..." { params.acceptVarargs(); }]
         {
