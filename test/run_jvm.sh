@@ -260,6 +260,11 @@ run_case duplicated-import "OK"
 # -- see arith-conversion.c's own comments for each one ---
 run_case arith-conversion "1;255;37;1;"
 
+# --- operator precedence: relational/equality vs. the bitwise ops,
+# found via the c-testsuite project's own tests -- see
+# operator-precedence.c's own comments ---
+run_case operator-precedence "0;1;0;1;5;"
+
 echo
 echo "pass=$pass known-diff=$known fail=$fail"
 rm -rf "$SCRATCH"

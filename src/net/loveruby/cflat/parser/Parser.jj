@@ -1522,15 +1522,25 @@ ExprNode expr8():
 // #@@}
 
 // #@@range/expr7{
+// Bitwise OR/XOR/AND (expr7/expr6/expr5) bind LOOSER than equality
+// (expr4), which itself binds LOOSER than relational (expr3) -- e.g.
+// "x & y == 0" is (in real C, and here) "x & (y == 0)", not
+// "(x & y) == 0", and "a < b & c >= d" is "(a<b) & (c>=d)", not
+// "(a < (b&c)) >= d" -- matching C99 6.5's own precedence table
+// exactly (relational binds tighter than equality, which binds
+// tighter than "&", which binds tighter than "^", which binds tighter
+// than "|"). This used to have relational and equality merged into a
+// single left-to-right chain (a single "expr7") sitting ABOVE "|"/"^"/
+// "&" in this recursive-descent chain -- i.e. binding LOOSER than all
+// three -- which is backwards for "&"/"^" specifically: any
+// expression mixing a relational/equality comparison with a bitwise
+// operator, without fully parenthesizing every comparison, silently
+// parsed as an entirely different expression tree and computed the
+// wrong value.
 ExprNode expr7():
 { ExprNode l, r; }
 {
-    l=expr6() ( ">"  r=expr6() { l = new BinaryOpNode(l, ">", r); }
-              | "<"  r=expr6() { l = new BinaryOpNode(l, "<", r); }
-              | ">=" r=expr6() { l = new BinaryOpNode(l, ">=", r); }
-              | "<=" r=expr6() { l = new BinaryOpNode(l, "<=", r); }
-              | "==" r=expr6() { l = new BinaryOpNode(l, "==", r); }
-              | "!=" r=expr6() { l = new BinaryOpNode(l, "!=", r); } )*
+    l=expr6() ("|" r=expr6() { l = new BinaryOpNode(l, "|", r); })*
         {
             return l;
         }
@@ -1541,7 +1551,7 @@ ExprNode expr7():
 ExprNode expr6():
 { ExprNode l, r; }
 {
-    l=expr5() ("|" r=expr5() { l = new BinaryOpNode(l, "|", r); })*
+    l=expr5() ("^" r=expr5() { l = new BinaryOpNode(l, "^", r); })*
         {
             return l;
         }
@@ -1552,7 +1562,7 @@ ExprNode expr6():
 ExprNode expr5():
 { ExprNode l, r; }
 {
-    l=expr4() ("^" r=expr4() { l = new BinaryOpNode(l, "^", r); })*
+    l=expr4() ("&" r=expr4() { l = new BinaryOpNode(l, "&", r); })*
         {
             return l;
         }
@@ -1563,7 +1573,8 @@ ExprNode expr5():
 ExprNode expr4():
 { ExprNode l, r; }
 {
-    l=expr3() ("&" r=expr3() { l = new BinaryOpNode(l, "&", r); })*
+    l=expr3() ( "==" r=expr3() { l = new BinaryOpNode(l, "==", r); }
+              | "!=" r=expr3() { l = new BinaryOpNode(l, "!=", r); } )*
         {
             return l;
         }
@@ -1574,9 +1585,10 @@ ExprNode expr4():
 ExprNode expr3():
 { ExprNode l, r; }
 {
-    l=expr2() ( ">>" r=expr2() { l = new BinaryOpNode(l, ">>", r); }
-              | "<<" r=expr2() { l = new BinaryOpNode(l, "<<", r); }
-              )*
+    l=expr2() ( ">"  r=expr2() { l = new BinaryOpNode(l, ">", r); }
+              | "<"  r=expr2() { l = new BinaryOpNode(l, "<", r); }
+              | ">=" r=expr2() { l = new BinaryOpNode(l, ">=", r); }
+              | "<=" r=expr2() { l = new BinaryOpNode(l, "<=", r); } )*
         {
             return l;
         }
@@ -1587,8 +1599,8 @@ ExprNode expr3():
 ExprNode expr2():
 { ExprNode l, r; }
 {
-    l=expr1() ( "+" r=expr1() { l = new BinaryOpNode(l, "+", r); }
-              | "-" r=expr1() { l = new BinaryOpNode(l, "-", r); }
+    l=expr1() ( ">>" r=expr1() { l = new BinaryOpNode(l, ">>", r); }
+              | "<<" r=expr1() { l = new BinaryOpNode(l, "<<", r); }
               )*
         {
             return l;
@@ -1598,6 +1610,19 @@ ExprNode expr2():
 
 // #@@range/expr1{
 ExprNode expr1():
+{ ExprNode l, r; }
+{
+    l=expr0() ( "+" r=expr0() { l = new BinaryOpNode(l, "+", r); }
+              | "-" r=expr0() { l = new BinaryOpNode(l, "-", r); }
+              )*
+        {
+            return l;
+        }
+}
+// #@@}
+
+// #@@range/expr0{
+ExprNode expr0():
 { ExprNode l, r; }
 {
     l=term() ( "*" r=term() { l = new BinaryOpNode(l, "*", r); }
