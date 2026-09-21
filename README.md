@@ -757,6 +757,61 @@ actual bytecode size) rather than silently miscompiling or crashing
 with a raw ASM stack trace. The fix is splitting the offending cflat
 function itself into smaller ones.
 
+### Embedding a compiled program in plain Java
+
+Every non-`static` (in the C sense) top-level function in a `-arch=jvm`
+compiled program is already a `public static` method on its generated
+class -- exactly like `main` itself, and every public `stdio.h`
+function -- so ordinary Java code sharing the same JVM (a GUI, a test
+harness, a larger application embedding the compiled program, ...) can
+call one directly, no different from calling a method on any other
+object, with no subprocess and no native code. A cflat pointer argument
+or return value is just the `long` byte-offset it always is on this
+backend (see below); a fixed-width `int`/`long`/`float`/`double` maps
+the same way `CodeGenerator#buildDescriptor` always maps it.
+
+The one thing about a generated class that *isn't* public is its own
+simulated address space (a `private static byte[]` field, `$mem`,
+generated fresh with no accessor of its own -- every C function reaches
+it directly, needing none). `net.loveruby.cflat.sysdep.jvm.runtime.
+StandardRuntime` (which every compiled program's class extends, via
+`NativeRuntime` -- see above) has a "Public Java API" section for
+exactly this: `readByte`/`readUnsignedByte`/`readShort`/
+`readUnsignedShort`/`readInt`/`readIntLE`/`readUnsignedInt`/`readLong`/
+`readLongLE`/`readFloat`/`readDouble`/`readPointer` (an alias for
+`readLong`, for code specifically walking pointers) and their
+`write*()` counterparts, plus `readBytes(addr, length)`/
+`writeBytes(addr, data)` for a whole block at once, `readCString(addr)`/
+`newString(s)` for a NUL-terminated C string (UTF-8, matching how this
+backend's own string literals are encoded), and `memory()` for the
+backing `byte[]` itself when bulk array access is specifically what's
+needed. Every one of them reads/writes memory in exactly the layout a
+compiled program's own generated code already uses (little-endian),
+so a value either side writes is always read correctly by the other.
+
+Every compiled class also has a generated `public static
+StandardRuntime $runtime()`, returning its own one shared instance (see
+`CodeGenerator#emitRuntimeAccessor`) -- `MyProgram.$runtime().
+readInt(addr)` reaches it with no reflection needed anywhere. (The `$`
+prefix, like every other compiler-synthesized member here -- `$mem`,
+`$alloc`, ... -- just means "generated, can't collide with a real C
+identifier"; unlike those, this one is deliberately public.)
+
+```java
+// A compiled decode.c (cbc -arch=jvm -o decode decode.c) exposing:
+//   long allocBuffer(int size);  // wraps malloc()
+//   unsigned char *decodeFromMemory(unsigned char *buf, int len,
+//                                   int *outW, int *outH, int *outChannels);
+StandardRuntime rt = decode.$runtime();
+long inputAddr = decode.allocBuffer(fileBytes.length);
+rt.writeBytes(inputAddr, fileBytes);
+long scratch = decode.allocBuffer(12);
+long dataAddr = decode.decodeFromMemory(inputAddr, fileBytes.length,
+        scratch, scratch + 4, scratch + 8);
+int w = rt.readInt(scratch), h = rt.readInt(scratch + 4);
+byte[] pixels = rt.readBytes(dataAddr, w * h * rt.readInt(scratch + 8));
+```
+
 Original descrition
 ====================
 

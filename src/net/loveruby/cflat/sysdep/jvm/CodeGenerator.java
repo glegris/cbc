@@ -129,6 +129,14 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             "net/loveruby/cflat/sysdep/jvm/runtime/StandardRuntime";
     private static final String RT_FIELD = "$rt";
 
+    // "$"-prefixed like every other compiler-synthesized member here
+    // (MEM_FIELD, RT_FIELD, ...), for the same reason: a "$" can never
+    // appear in a real C identifier, so this can never collide with a
+    // same-named cflat function in the program being compiled, even
+    // though -- unlike those internal-only ones -- it's deliberately
+    // PUBLIC: see emitRuntimeAccessor()'s own doc comment for why.
+    private static final String RUNTIME_ACCESSOR_METHOD = "$runtime";
+
     /** Names already implemented in StandardRuntime.java, so
      *  compileNativeCall() doesn't generate a NativeRuntime stub for
      *  them. Hardcoded rather than found by reflecting over the actual
@@ -279,6 +287,7 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         cw.visitField(ACC_PRIVATE | ACC_STATIC, RT_FIELD, runtimeDesc(), null, null).visitEnd();
 
         emitConstructor();
+        emitRuntimeAccessor();
         emitAllocHelper();
         emitNewstrHelper();
         emitClinit(ir);
@@ -392,6 +401,25 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         mv.visitVarInsn(ALOAD, 0);
         mv.visitMethodInsn(INVOKESPECIAL, NATIVE_RUNTIME_CLASS, "<init>", "()V", false);
         mv.visitInsn(RETURN);
+        mv.visitMaxs(0, 0);
+        mv.visitEnd();
+    }
+
+    /** Lets plain Java code elsewhere in the same JVM (not compiled
+     *  cflat) reach this program's own shared StandardRuntime instance
+     *  -- and, through its public API (readInt()/writeBytes()/memory()/
+     *  ... -- see that class's own doc comment on that section), this
+     *  program's simulated memory -- without reflection: RT_FIELD
+     *  itself is private (an internal detail every *other* generated
+     *  method already reaches directly, needing no accessor of its
+     *  own), so this is the one deliberately public door into it,
+     *  generated on every compiled class alike. */
+    private void emitRuntimeAccessor() {
+        MethodVisitor mv = cw.visitMethod(ACC_PUBLIC | ACC_STATIC, RUNTIME_ACCESSOR_METHOD,
+                "()L" + STANDARD_RUNTIME_CLASS + ";", null, null);
+        mv.visitCode();
+        mv.visitFieldInsn(GETSTATIC, className, RT_FIELD, runtimeDesc());
+        mv.visitInsn(ARETURN);
         mv.visitMaxs(0, 0);
         mv.visitEnd();
     }

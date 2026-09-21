@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
@@ -442,16 +443,6 @@ public class StandardRuntime {
     private final Map<Integer, Boolean> fdEof = new HashMap<Integer, Boolean>();
     private int nextFd = 3;
 
-    private String readCString(long addr) {
-        StringBuilder sb = new StringBuilder();
-        int i = at(addr);
-        while (mem[i] != 0) {
-            sb.append((char) (mem[i] & 0xFF));
-            i++;
-        }
-        return sb.toString();
-    }
-
     /** Opens "mode" ("r"/"w"/"a", each optionally with "+"/"b") the same
      *  way fopen() promises to, returning a new fd (>= 3) on success or
      *  -1 on failure -- there's no errno to report a real cause through
@@ -622,6 +613,180 @@ public class StandardRuntime {
         long value = buf.getLong(at(valueAddr));
         buf.putLong(a, valueAddr + 8);
         return value;
+    }
+
+    //
+    // Public Java API: for plain Java code (not compiled cflat) sharing
+    // this same JVM process with a compiled program, to inspect or
+    // modify its simulated memory directly instead of reaching for
+    // reflection. Every compiled program's own class already exposes a
+    // public static "$runtime()" method returning its one shared
+    // StandardRuntime instance (see CodeGenerator#emitRuntimeAccessor),
+    // so "MyProgram.$runtime().readInt(addr)" (etc.) works directly, no
+    // different from calling any other public method on any other
+    // object -- and every method below reads/writes memory in exactly
+    // the same layout (little-endian, via the same "buf" wrapping the
+    // same "mem") a compiled program's own generated code already does,
+    // so a value written by one side is always read correctly by the
+    // other, with no separate byte-order bookkeeping for a caller to
+    // get wrong. A cflat pointer is always just this "long" address, on
+    // both sides of that boundary alike.
+    //
+
+    /** The compiled program's whole simulated address space, as a plain
+     *  byte[] -- the very array every method in this class already
+     *  reads and writes. Returned directly, not a copy: reading a large
+     *  range (e.g. a decoded image's pixel bytes) this way costs
+     *  nothing extra, at the cost of also being able to corrupt the
+     *  compiled program's own state if written to carelessly -- prefer
+     *  the typed read*()/write*() methods below for anything narrower
+     *  than "I specifically need the backing array itself". */
+    public byte[] memory() {
+        return mem;
+    }
+
+    public byte readByte(long addr) {
+        return mem[at(addr)];
+    }
+
+    public int readUnsignedByte(long addr) {
+        return mem[at(addr)] & 0xFF;
+    }
+
+    public short readShort(long addr) {
+        return buf.getShort(at(addr));
+    }
+
+    public int readUnsignedShort(long addr) {
+        return buf.getShort(at(addr)) & 0xFFFF;
+    }
+
+    /** The byte order every compiled program's own generated code
+     *  already reads/writes an "int" in (little-endian, matching "buf"
+     *  above) -- readIntLE() is the exact same method under an explicit
+     *  name, for a caller that would rather not depend on "readInt() is
+     *  documented as little-endian" staying true forever. */
+    public int readInt(long addr) {
+        return buf.getInt(at(addr));
+    }
+
+    public int readIntLE(long addr) {
+        return readInt(addr);
+    }
+
+    public long readUnsignedInt(long addr) {
+        return ((long) readInt(addr)) & 0xFFFFFFFFL;
+    }
+
+    public long readLong(long addr) {
+        return buf.getLong(at(addr));
+    }
+
+    public long readLongLE(long addr) {
+        return readLong(addr);
+    }
+
+    /** A cflat pointer is itself just a "long" (see this class's own
+     *  doc comment) -- readPointer()/writePointer() are readLong()/
+     *  writeLong() under the name that actually describes what's being
+     *  read or written, for code specifically walking pointers rather
+     *  than reading an 8-byte integer. */
+    public long readPointer(long addr) {
+        return readLong(addr);
+    }
+
+    public float readFloat(long addr) {
+        return buf.getFloat(at(addr));
+    }
+
+    public double readDouble(long addr) {
+        return buf.getDouble(at(addr));
+    }
+
+    /** Copies "length" bytes starting at "addr" out into a fresh array
+     *  -- e.g. a decoded image's own pixel bytes, or any other block a
+     *  cflat pointer refers to. */
+    public byte[] readBytes(long addr, int length) {
+        byte[] result = new byte[length];
+        System.arraycopy(mem, at(addr), result, 0, length);
+        return result;
+    }
+
+    /** A NUL-terminated C string starting at "addr", decoded the same
+     *  way this backend's own string literals are encoded in the first
+     *  place (see CodeGenerator#encodeCString) -- UTF-8, so real
+     *  non-ASCII text written by the compiled program (or by
+     *  newString() below) round-trips correctly. Also used internally,
+     *  above, for fopen()'s own path/mode decoding (ASCII either way
+     *  for any real "mode" string, and UTF-8 is the more correct
+     *  reading of a real filesystem path than this used to do). */
+    public String readCString(long addr) {
+        int start = at(addr);
+        int end = start;
+        while (mem[end] != 0) end++;
+        return new String(mem, start, end - start, StandardCharsets.UTF_8);
+    }
+
+    public void writeByte(long addr, int value) {
+        mem[at(addr)] = (byte) value;
+    }
+
+    public void writeShort(long addr, int value) {
+        buf.putShort(at(addr), (short) value);
+    }
+
+    public void writeInt(long addr, int value) {
+        buf.putInt(at(addr), value);
+    }
+
+    public void writeIntLE(long addr, int value) {
+        writeInt(addr, value);
+    }
+
+    public void writeLong(long addr, long value) {
+        buf.putLong(at(addr), value);
+    }
+
+    public void writeLongLE(long addr, long value) {
+        writeLong(addr, value);
+    }
+
+    public void writePointer(long addr, long value) {
+        writeLong(addr, value);
+    }
+
+    public void writeFloat(long addr, float value) {
+        buf.putFloat(at(addr), value);
+    }
+
+    public void writeDouble(long addr, double value) {
+        buf.putDouble(at(addr), value);
+    }
+
+    /** Copies "data" into memory starting at "addr" -- the caller is
+     *  responsible for "addr" pointing at an already-allocated block
+     *  (e.g. from malloc() below) at least "data.length" bytes long;
+     *  nothing here checks. */
+    public void writeBytes(long addr, byte[] data) {
+        System.arraycopy(data, 0, mem, at(addr), data.length);
+    }
+
+    /** Allocates (via malloc() below) a fresh, NUL-terminated C string
+     *  built from a Java String's own UTF-8 bytes, and returns its
+     *  address -- the Java-facing equivalent of what a compiled
+     *  program's own generated code already does internally to build
+     *  one (see CodeGenerator's own "$newstr", used for e.g. argv),
+     *  exposed here so external Java code building one itself (a
+     *  filesystem path to hand to fopen(), say) doesn't need its own
+     *  malloc()+writeBytes()+NUL boilerplate. Returns 0 (NULL), exactly
+     *  like a failed malloc() itself, if allocation fails. */
+    public long newString(String s) {
+        byte[] bytes = s.getBytes(StandardCharsets.UTF_8);
+        long addr = malloc(bytes.length + 1);
+        if (addr == 0) return 0;
+        writeBytes(addr, bytes);
+        writeByte(addr + bytes.length, 0);
+        return addr;
     }
 
     //

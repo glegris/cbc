@@ -214,6 +214,41 @@ run_exit0() {
     fi
 }
 
+# run_java_api_case NAME EXPECTED-STDOUT HARNESS.java -- compiles NAME.c
+# with cbc, then compiles+runs a plain-Java (javac, not cbc) harness
+# class alongside it in the same JVM, for testing the JVM backend's own
+# public Java-facing runtime API (StandardRuntime's "Public Java API"
+# section: $runtime(), readInt()/writeBytes()/..., see pubapi-runtime.c
+# and PubapiRuntimeTest.java for what this actually exercises) -- no
+# subprocess, no reflection, just the harness calling the compiled
+# class's own public static methods directly, exactly like real code
+# embedding a compiled cflat program would.
+run_java_api_case() {
+    local name="$1" expected="$2" harness="$3"
+    local work="$SCRATCH/$name"
+    mkdir -p "$work"
+    cp "$DIR/$name.c" "$work/"
+    cp "$DIR/$harness" "$work/"
+    ( cd "$work" && "$CBC" -arch=jvm "$name.c" ) >"$work/compile.out" 2>"$work/compile.err"
+    if [ $? -ne 0 ]; then
+        report FAIL "$name" "$(grep -v 'Picked up' "$work/compile.err" | head -1)"
+        return
+    fi
+    local hclass="${harness%.java}"
+    ( cd "$work" && javac -cp ".:$CBC_CLASSES" "$harness" ) >"$work/javac.out" 2>"$work/javac.err"
+    if [ $? -ne 0 ]; then
+        report FAIL "$name" "javac: $(head -1 "$work/javac.err")"
+        return
+    fi
+    local actual
+    actual=$(cd "$work" && java -cp ".:$CBC_CLASSES" "$hclass" 2>run.err)
+    if [ "$actual" = "$expected" ]; then
+        report OK "$name"
+    else
+        report FAIL "$name" "expected [$expected] got [$actual] ($(grep -v 'Picked up' "$work/run.err" | head -1))"
+    fi
+}
+
 # --- arithmetic / expressions / control flow ---
 run_case integer      "0;0;0;1;1;1;9;9;9;17;17;17"
 run_case funcall0     ""
@@ -484,6 +519,14 @@ run_case static-init-extras "8;2;50;10;"
 run_case ptr-to-const "first;second;"
 run_case switch-case-const-expr "100;200;300;400;-1;"
 run_case typedef-integer-literal "200;"
+
+# --- the JVM backend's public Java-facing runtime API, added directly
+# in response to the stb_image.h demo above: a plain Java program that
+# embeds a compiled cflat program used to need reflection (a private
+# "$mem" field with no accessor) to read/write its simulated memory --
+# see StandardRuntime's own "Public Java API" doc comment, and
+# pubapi-runtime.c/PubapiRuntimeTest.java for what this covers ---
+run_java_api_case pubapi-runtime "111;222;initial;REPLACED;true;true;true" PubapiRuntimeTest.java
 
 echo
 echo "pass=$pass known-diff=$known fail=$fail"
