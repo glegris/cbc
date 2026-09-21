@@ -108,6 +108,34 @@ run_case() {
     fi
 }
 
+# run_multifile_case NAME EXPECTED-STDOUT -- compiles test/NAME-*.c
+# (lexical order) together as one unit via -arch=jvm's own multi-file
+# support (Compiler#buildMultipleSourcesAsOneUnit()), explicitly naming
+# the result with -o so the produced class name is predictable.
+run_multifile_case() {
+    local name="$1" expected="$2"
+    local work="$SCRATCH/$name"
+    mkdir -p "$work"
+    local srcs=()
+    for f in "$DIR/$name"-*.c; do
+        cp "$f" "$work/"
+        srcs+=("$(basename "$f")")
+    done
+    ( cd "$work" && "$CBC" -arch=jvm -I "$IMPORT" -o "$name" "${srcs[@]}" ) \
+        >"$work/compile.out" 2>"$work/compile.err"
+    if [ $? -ne 0 ]; then
+        report FAIL "$name" "$(grep -v 'Picked up' "$work/compile.err" | head -1)"
+        return
+    fi
+    local actual
+    actual=$(cd "$work" && java -cp .:"$CBC_CLASSES" "$name" 2>run.err)
+    if [ "$actual" = "$expected" ]; then
+        report OK "$name"
+    else
+        report FAIL "$name" "expected [$expected] got [$actual] ($(grep -v 'Picked up' "$work/run.err" | head -1))"
+    fi
+}
+
 # run_exit0 NAME -- passes if it compiles and exits 0, output not checked.
 run_exit0() {
     local name="$1"
@@ -356,6 +384,18 @@ run_case flexible-array-member "4;5;100;8;"
 # all -- see bitfield.c for the read/write/packing/sign-extension
 # cases this covers ---
 run_case bitfield "0;7;7;-1;-8;65;0;1234;0;100000;1234;1234;5678;1234;"
+
+# --- multiple ".c" sources given to a target with no separate
+# assemble/link step of its own (the JVM one) used to silently produce
+# broken output: each file compiled to its own class with no way for
+# them to call each other, failing only at *run* time with a confusing
+# NoSuchMethodError. See Compiler#buildMultipleSourcesAsOneUnit()'s own
+# comment for how this compiles several files as one unit instead
+# (and its documented "static" name collision caveat) -- multifile-a.c
+# defines a "static" helper/global + one function multifile-b.c calls
+# via "extern", and both files have their own same-named-by-design
+# "static" helper to confirm those don't collide with each other. ---
+run_multifile_case multifile "106;10;100;"
 
 echo
 echo "pass=$pass known-diff=$known fail=$fail"

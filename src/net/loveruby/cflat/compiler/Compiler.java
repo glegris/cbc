@@ -116,6 +116,10 @@ public class Compiler {
     // #@@range/build{
     public void build(List<SourceFile> srcs, Options opts)
                                         throws CompileException {
+        if (! opts.needsExternalToolchain() && countCflatSources(srcs) > 1) {
+            buildMultipleSourcesAsOneUnit(srcs, opts);
+            return;
+        }
         for (SourceFile src : srcs) {
             if (src.isCflatSource()) {
                 String destPath = opts.asmFileNameOf(src);
@@ -131,6 +135,100 @@ public class Compiler {
         }
         if (! opts.isLinkRequired()) return;
         link(opts);
+    }
+    // #@@}
+
+    private long countCflatSources(List<SourceFile> srcs) {
+        long n = 0;
+        for (SourceFile src : srcs) {
+            if (src.isCflatSource()) n++;
+        }
+        return n;
+    }
+
+    // #@@range/buildMultipleSourcesAsOneUnit{
+    // A target with no separate assemble/link step (the JVM one, today
+    // -- see Options#needsExternalToolchain()) has no real object-file
+    // format or system linker of its own to farm cross-file symbol
+    // resolution out to the way x86 already does (each ".c" compiles to
+    // its own real ".o", and "ld" resolves "extern"/"static" linkage
+    // across all of them when producing the final executable -- see
+    // Options#ldArgs()). Rather than reimplementing that machinery at
+    // this backend's own level, several ".c" files given to it are
+    // compiled as a *single* translation unit, synthesized by
+    // "#include"-ing each one in turn into one temporary wrapper file
+    // and running it through the exact same single-file pipeline
+    // compile() already uses for one real ".c" file -- the preprocessor
+    // already flattens "#include" into one token stream before parsing
+    // even begins, so nothing downstream (LocalResolver's ToplevelScope,
+    // TypeResolver, IRGenerator, CodeGenerator) needs to change at all.
+    //
+    // This is exactly the well-known "unity build" technique some real
+    // C projects already use on purpose (catting/#include-ing several
+    // ".c" files together for one compiler invocation) -- with the same
+    // limitation: two of the given files both defining a "static" (or
+    // any other same-named, non-externally-linked) symbol collide here
+    // exactly as they would in a hand-written unity build, unlike
+    // real per-file separate compilation (where each file's "static"
+    // symbols stay genuinely private to it). Diagnosed today as a
+    // plain "duplicated definition" error naming both locations, same
+    // as it would be for two such definitions written in one literal
+    // file -- moving each offending file's own "static" name apart is
+    // the same fix a real unity build would also need.
+    private void buildMultipleSourcesAsOneUnit(List<SourceFile> srcs, Options opts)
+            throws CompileException {
+        for (SourceFile src : srcs) {
+            if (! src.isCflatSource()) {
+                throw new SemanticException(src.path() + ": only \".c\" sources "
+                        + "can be combined this way (this target has no separate "
+                        + "assemble/link step to hand a \".s\"/\".o\"/library to)");
+            }
+        }
+        File wrapperDir = createIncludeWrapper(srcs, wrapperBaseName(opts));
+        File wrapper = new File(wrapperDir, wrapperBaseName(opts) + ".c");
+        try {
+            String destPath = opts.asmFileNameOf(new SourceFile(wrapper.getPath()));
+            compile(wrapper.getPath(), destPath, opts);
+        }
+        finally {
+            wrapper.delete();
+            wrapperDir.delete();
+        }
+    }
+
+    // The wrapper's own base name becomes both the default output file
+    // name (absent "-o") and -- unlike either of those, not something
+    // any "-o"/"asmFileNameOf" plumbing actually controls today, single
+    // real source file or not -- the actual class name a JVM-target
+    // compile embeds in its bytecode (see CodeGenerator's own
+    // baseName()/className, derived from wherever the *parsed file's
+    // own path* says, never from "-o"). Naming the wrapper file itself
+    // to match is simplest: no separate "rename the embedded class"
+    // mechanism to add.
+    private String wrapperBaseName(Options opts) {
+        if (opts.outputFileName() == null) return "a";
+        return new File(opts.outputFileName()).getName().replaceFirst("\\.[^.]*$", "");
+    }
+
+    private File createIncludeWrapper(List<SourceFile> srcs, String baseName)
+            throws CompileException {
+        StringBuilder body = new StringBuilder();
+        for (SourceFile src : srcs) {
+            String absPath = new File(src.path()).getAbsolutePath();
+            body.append("#include \"").append(absPath).append("\"\n");
+        }
+        try {
+            File dir = Files.createTempDirectory("cbc-multifile-").toFile();
+            writeFile(new File(dir, baseName + ".c").getPath(), body.toString());
+            return dir;
+        }
+        catch (IOException ex) {
+            throw new SemanticException("could not create a temporary file to "
+                    + "combine multiple sources: " + ex.getMessage());
+        }
+        catch (FileException ex) {
+            throw new SemanticException(ex.getMessage());
+        }
     }
     // #@@}
 

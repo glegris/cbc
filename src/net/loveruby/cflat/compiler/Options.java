@@ -43,6 +43,16 @@ class Options {
         return mode.requires(CompilerMode.Link) && platform.needsExternalToolchain();
     }
 
+    // True for a target (the JVM one, today) whose own CodeGenerator
+    // already produces the final, directly runnable artifact with no
+    // separate assemble/link step at all -- see Compiler#build()'s own
+    // multi-file handling, which needs to tell this apart from a target
+    // like x86 that already does real, independent separate compilation
+    // through its own assembler and a real system linker.
+    boolean needsExternalToolchain() {
+        return platform.needsExternalToolchain();
+    }
+
     List<SourceFile> sourceFiles() {
         return sourceFiles;
     }
@@ -53,6 +63,17 @@ class Options {
         // not just in "-S" mode.
         if (outputFileName != null
                 && (mode == CompilerMode.Compile || !platform.needsExternalToolchain())) {
+            if (! platform.needsExternalToolchain()) {
+                // A JVM-target artifact is a real class file that the
+                // JVM's own classloader must find by exactly this name
+                // ("Foo.class") -- unlike an x86 executable's own "-o"
+                // name, which is never expected to carry any particular
+                // extension.
+                String ext = platform.compiledFileExtension();
+                if (! outputFileName.endsWith(ext)) {
+                    return outputFileName + ext;
+                }
+            }
             return outputFileName;
         }
         return src.compiledFileName(platform.compiledFileExtension());
@@ -278,7 +299,15 @@ class Options {
         }
         if (outputFileName != null
                 && sourceFiles.size() > 1
-                && ! isLinkRequired()) {
+                && ! isLinkRequired()
+                // A target with no separate assemble/link step of its own
+                // (the JVM one, today) instead compiles several ".c"
+                // sources as one unit (see Compiler#build()), for which
+                // "-o" naming the one combined result is perfectly valid
+                // -- this restriction only makes sense for a target that
+                // needs an actual link step to combine multiple inputs
+                // into one, like x86.
+                && platform.needsExternalToolchain()) {
             parseError("-o option requires only 1 input (except linking)");
         }
     }
