@@ -1,76 +1,53 @@
 CbC - Cflat Compiler (the ubuntu 64bit version)
 ====================
 
-The ubuntu 64-bit version of the cbc compiler implemented in the [book "Homemade Compilers."](http://www.ituring.com.cn/book/1308). This project mainly solves the problem of unable to compile and run [cbc](https://github.com/aamine/cbc) on 64-bit machines.
+The ubuntu 64-bit version of the cbc compiler implemented in the [book "Homemade Compilers."](http://www.ituring.com.cn/book/1308). This project mainly solves the problem of unable to compile and run [cbc](https://github.com/aamine/cbc) on 64-bit machines. It has since grown a second, x86-independent backend that compiles straight to a JVM class file (`-arch=jvm`; see its own section below) -- the simplest way to try cbc today, since it needs only a JDK and no 32-bit toolchain at all.
 
-## Direct installation use (on ubuntu 64-bits systems)
-
-### Installation dependencies
-
-> Note: Different ubuntu distributions may rely on inconsistent library names. The code here is the installation command on ubuntu 16.04
+## Building from source
 
 ```shell
-apt-get update && apt-get install -y \
-        gcc-multilib g++-multilib libc6-i386 lib32ncurses5 lib32stdc++6 \
-        openjdk-8-jre \
-        git
+git clone <this repository's URL>
+cd cbc
+bin/build.sh   # compiles src/ into build/classes (see "Command-line
+               # build & test scripts" below for the details)
+bin/cbc test/hello.c -arch=jvm -o hello
+java -cp build/classes:lib/asm-9.7.1.jar hello
+> Hello, World!
 ```
 
-###  Download & Install cbc
+### Installing system-wide
 
 ```shell
-git clone https://github.com/leungwensen/cbc-ubuntu-64bit.git
-cd cbc-ubuntu-64bit && ./install.sh
+bin/build.sh
+./install.sh /usr/local/cbc   # or any other prefix; defaults to /usr/local/cbc
+export PATH="/usr/local/cbc/bin:$PATH"
+cbc -arch=jvm -I /usr/local/cbc/import test/hello.c -o hello
 ```
 
-###  Usage
+### Native x86 backend (`-arch=x86`, the default)
 
-Unlike the original cbc, the -Wa,"--32" -Wl,"-melf_i386" execution parameters need to be added to the 64-bit system.
+This needs a 32-bit assembler/linker even on a 64-bit host (different
+distributions name these packages differently; on Ubuntu):
 
 ```shell
-cbc -Wa,"--32" -Wl,"-melf_i386" test/hello.cb
+apt-get update && apt-get install -y gcc-multilib g++-multilib libc6-i386 lib32ncurses5 lib32stdc++6
+```
+
+Unlike the original cbc, the 32-bit `-Wa,"--32" -Wl,"-melf_i386"` execution
+parameters need to be added on a 64-bit system:
+
+```shell
+cbc -Wa,"--32" -Wl,"-melf_i386" test/hello.c
 ./hello
 > Hello, World!
 ```
 
-##  Use docker image (on any 64-bit host environment)
-
-The general principle is to build an environment for cbc compilation and execution based on the 64-bit system of Ubuntu 16.04. Users only need to download the packaged image locally to get the executable cbc, eliminating the need to configure and compile cbc.
-
-### Install docker
-
-### Start the docker daemon process
-
-```shell
-eval $(docker-machine env default)
-```
-
-### Download the mirror [leungwensen/cbc-ubuntu-64bit](https://hub.docker.com/r/leungwensen/cbc-ubuntu-64bit)
-
-```shell
-docker pull leungwensen/cbc-ubuntu-64bit
-```
-
-### Perform mirroring 
-
-```shell
-docker run -t -i leungwensen/cbc-ubuntu-64bit
-```
-
-### Execute cbc 
-
-> The cbc command in the image is an alias of cbc -Wa,--32 -Wl,-melf_i386 and can be executed directly.
-
-```shell
-cbc cbc-ubuntu-64bit/test/hello.cb
-```
+`install.sh` also needs `lib/libcbc.a` (the x86 backend's own tiny runtime
+support library) built first: `(cd lib && make)`.
 
 ## Command-line build & test scripts
 
-For working on cbc itself without going through `ant` (which needs
-`build.properties`'s `javacc.dir` to already point at a real
-`javacc.jar`), three scripts under `bin/` cover the usual edit/build/test
-loop:
+Three scripts under `bin/` cover the usual edit/build/test loop:
 
 ```shell
 bin/build.sh   # compiles src/ into build/classes; regenerates the parser
@@ -78,8 +55,7 @@ bin/build.sh   # compiles src/ into build/classes; regenerates the parser
                # $JAVACC_JAR to point at one), otherwise just recompiles
                # the parser sources already checked into the repo
 bin/cbc ...    # runs the compiler just built, same CLI as an installed
-               # cbc (test/test_cbc.sh and test/Makefile already expect
-               # this exact path)
+               # cbc (test/test_cbc.sh already expects this exact path)
 bin/test.sh    # builds, then runs both test suites below
 ```
 
@@ -87,7 +63,7 @@ bin/test.sh    # builds, then runs both test suites below
 native x86 suite (`test/test_cbc.sh`, via `test/run.sh`) -- but only the
 latter if this machine actually has the 32-bit runtime objects
 `GNULinker.java` needs to link a real x86 executable (`crt1.o`, the
-32-bit dynamic linker, etc; see "Installation dependencies" above). On a
+32-bit dynamic linker, etc; see "Native x86 backend" above). On a
 machine without the multilib packages installed, that suite is reported
 as skipped rather than failed, since there's nothing wrong with the
 compiler in that case.
@@ -624,7 +600,7 @@ C-style address space:
     compound-assignment operator (pointer `+=`/`-=` was the one existing
     exception), where C99 only actually restricts `%= &= |= ^= <<= >>=`
     to integers; found compiling minimp3.h (`demos/minimp3`), whose own
-    `L3_ldexp_q2` does exactly this (`y *= g_expfrac[...]…`).
+    `L3_ldexp_q2` does exactly this (`y *= g_expfrac[...]`).
   * **variadic functions**: defining one (`int myprintf(char *fmt, ...)`)
     and calling it both work, for `int`/`long`/pointer and `float`/`double`
     (promoted to `double`, per C's own default argument promotion)
@@ -878,57 +854,10 @@ Original descrition
 
     This is the CbC, Cflat programming language compiler.
 
-Requirements
-------------
-
-    To compile cbc itself:
-
-        * JDK 1.5 or later
-        * JavaCC 4.0 or later
-        * ant
-        * make
-
-    To run cbc and compiled program:
-
-        * Linux 2.4 or later
-        * util-linux (ld-linux.so.2)
-        * GNU libc 2.3 or later
-        * GNU binutils (as, ld)
-
-
-Installation
-------------
-
-    To install all files under /usr/local/cbc:
-
-        # sudo ./install.sh
-        # sudo ln -s ../cbc/bin/cbc /usr/local/bin/cbc
-
-    To install all files under $HOME/cbc:
-
-        $ ./install.sh $HOME/cbc
-        $ ln -s ../cbc/bin/cbc $HOME/bin/cbc
-
-
-Build
------
-
-    Edit build.properties for your environment and invoke make:
-
-        $ vi build.properties
-        $ make
-
-
-Test
-----
-
-    Invoke "make test":
-
-        $ make test
-
-    Note that you need bash (not bourne sh) to run test scripts.
-    ksh or zsh may work.
-
+(Its original Requirements/Installation/Build/Test instructions --
+an `ant`+`make`-based workflow -- have been superseded by the
+up-to-date ones at the top of this README; see "Building from source"
+and "Command-line build & test scripts" above.)
 
 Usage
 -----

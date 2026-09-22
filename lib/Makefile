@@ -1,5 +1,5 @@
 CBC = ../bin/cbc
-CBFLAGS = -O -fPIC
+CBFLAGS = -O -fPIC -I ../import
 TARGET = libcbc.a
 OBJS = stdarg.o alloca.o
 

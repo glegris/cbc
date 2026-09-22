@@ -1,8 +1,8 @@
 #!/bin/bash
-# Wrapper matching the upstream "bin/cbc" convention that test/Makefile and
-# test/test_cbc.sh already expect: run bin/build.sh once, then use this to
-# invoke the compiler exactly like an installed "cbc" command (all of
-# Options.java's flags, e.g. -arch=jvm, -I, -S, -Wa,/-Wl,, work as-is).
+# Wrapper matching the upstream "bin/cbc" convention that test/test_cbc.sh
+# already expects: run bin/build.sh once, then use this to invoke the
+# compiler exactly like an installed "cbc" command (all of Options.java's
+# flags, e.g. -arch=jvm, -I, -S, -Wa,/-Wl,, work as-is).
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLASSES="$DIR/build/classes"
 ASM_JAR="$DIR/lib/asm-9.7.1.jar"

@@ -1,4 +1,4 @@
-.file	"stdarg.cb"
+.file	"stdarg.c"
 	.text
 .globl va_init
 	.type	va_init,@function

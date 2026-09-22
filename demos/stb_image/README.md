@@ -1,54 +1,52 @@
-# Décodage d'image avec stb_image.h via cbc (backend JVM) — 100 % Java, sans reflection
+# Image decoding with stb_image.h via cbc (JVM backend) -- 100% Java, no reflection
 
-`stb_image.h` (la vraie bibliothèque C, quasi non modifiée) est compilée
-par `cbc -arch=jvm`, puis **appelée directement, en Java pur, sans
-sous-processus ni réflexion** : `ShowImage.java` appelle des méthodes
-statiques publiques du programme C compilé, et une nouvelle API publique
-de `cbc` pour lire/écrire sa mémoire simulée.
+`stb_image.h` (the real C library, barely modified) is compiled by
+`cbc -arch=jvm`, then **called directly, in pure Java, with no
+subprocess and no reflection**: `ShowImage.java` calls public static
+methods on the compiled C program, plus a new public `cbc` API to
+read/write its simulated memory.
 
-## Comment ça marche
+## How it works
 
-`cbc` compile chaque fonction C de premier niveau (non `static` au sens
-C) en une méthode Java `public static` — c'est déjà le cas de `main()`
-et de toutes les fonctions publiques de `stb_image.h`
-(`stbi_load_from_memory`, `stbi_failure_reason`, `stbi_image_free`, ...).
-`decode.c` ajoute deux petites fonctions dans ce même esprit :
+`cbc` compiles every top-level C function (not C `static`) into a
+`public static` Java method -- already true of `main()` and of every
+public function in `stb_image.h` (`stbi_load_from_memory`,
+`stbi_failure_reason`, `stbi_image_free`, ...). `decode.c` adds two
+small functions in that same spirit:
 
-- `long allocBuffer(int size)` — enrobe `malloc()`.
-- `unsigned char *decodeFromMemory(...)` — enrobe `stbi_load_from_memory()`.
+- `long allocBuffer(int size)` -- wraps `malloc()`.
+- `unsigned char *decodeFromMemory(...)` -- wraps `stbi_load_from_memory()`.
 
-Nouveauté côté compilateur (suite à cette démo) : `cbc` expose
-désormais une vraie **API Java publique** pour lire/écrire la mémoire
-simulée d'un programme compilé, sans réflexion :
+New on the compiler side (built for this demo): `cbc` now exposes a
+real **public Java API** to read/write a compiled program's simulated
+memory, with no reflection:
 
-- Chaque classe générée a une méthode `public static StandardRuntime
-  $runtime()` renvoyant son instance runtime partagée.
-- `StandardRuntime` a une section "Public Java API" :
+- Every generated class has a `public static StandardRuntime
+  $runtime()` method returning its shared runtime instance.
+- `StandardRuntime` has a "Public Java API" section:
   `readByte`/`readUnsignedByte`/`readShort`/`readUnsignedShort`/
   `readInt`/`readIntLE`/`readUnsignedInt`/`readLong`/`readLongLE`/
-  `readFloat`/`readDouble`/`readPointer`, leurs équivalents `write*()`,
-  `readBytes`/`writeBytes` pour un bloc entier, `readCString`/
-  `newString` pour une chaîne C, et `memory()` pour le tableau brut.
+  `readFloat`/`readDouble`/`readPointer`, their `write*()` counterparts,
+  `readBytes`/`writeBytes` for a whole block, `readCString`/
+  `newString` for a C string, and `memory()` for the raw array.
 
-`ShowImage.java` n'utilise donc plus AUCUNE réflexion :
-`decode.$runtime()` + les méthodes `read*/write*` suffisent.
+`ShowImage.java` therefore uses NO reflection at all: `decode.$runtime()`
+plus the `read*`/`write*` methods are enough.
 
-## Fichiers
+## Files
 
-- `stb_image.h` — copie locale de la bibliothèque attachée, avec
-  quelques patchs minimes et documentés (`[cbc-patch]`) : support BMP
-  uniquement, un `typedef` de validation statique simplifié, et les
-  appels indirects `s->io.read/skip/eof(...)` remplacés par des appels
-  directs (cbc ne peut pas encore appeler indirectement via un pointeur
-  de fonction stocké dans un membre de structure).
-- `decode.c` — `main()` (CLI, inchangé) + `allocBuffer`/
-  `decodeFromMemory` pensés pour Java.
-- `ShowImage.java` — programme Java ordinaire, zéro réflexion, zéro
-  sous-processus.
-- `mascot.bmp` — l'image attachée par l'utilisateur (redimensionnée),
-  convertie en BMP.
+- `stb_image.h` -- local copy of the attached library, with a few
+  minimal, documented patches (`[cbc-patch]`): BMP-only support, a
+  simplified static-validation `typedef`, and the indirect calls
+  `s->io.read/skip/eof(...)` replaced with direct calls (cbc can't yet
+  call indirectly through a function pointer stored in a struct member).
+- `decode.c` -- `main()` (CLI, unchanged) + `allocBuffer`/
+  `decodeFromMemory` designed for Java.
+- `ShowImage.java` -- an ordinary Java program, zero reflection, zero
+  subprocess.
+- `mascot.bmp` -- the image the user attached (resized), converted to BMP.
 
-## Pour rejouer
+## To replay
 
 ```sh
 cbc -arch=jvm -I <cbc>/import -o decode decode.c
@@ -56,25 +54,23 @@ javac -cp .:<cbc>/build/classes ShowImage.java
 java -cp .:<cbc>/build/classes ShowImage mascot.bmp out.png
 ```
 
-## Ce que ça a nécessité côté compilateur
+## What this needed on the compiler side
 
-Deux vagues de changements dans le dépôt cbc lui-même
-(`claude/elegant-bohr-63jhe2`) :
+Two waves of changes to the cbc repo itself (`claude/elegant-bohr-63jhe2`):
 
-1. **`e914866`** — une dizaine de lacunes réelles du langage C trouvées
-   en compilant stb_image.h : opérateur virgule, enum anonyme,
-   "east const", déclarateurs multiples dans un membre de structure,
-   virgule finale dans un littéral agrégé, nom de fonction comme
-   constante d'initialisation statique, définition de fonction
-   `extern`, expression constante dans un `case`, plus deux vrais bugs
-   (pointeur-vers-const confondu avec pointeur-const ; un crash sur un
-   type `typedef` entier).
-2. **`508e7b5`** — la nouvelle API Java publique (`$runtime()` +
-   `StandardRuntime`'s "Public Java API") décrite ci-dessus, en réponse
-   directe à la demande d'éviter la réflexion.
+1. **`e914866`** -- around a dozen real C-language gaps found while
+   compiling stb_image.h: comma operator, anonymous enum, "east const",
+   multiple declarators in a struct member, trailing comma in an
+   aggregate literal, a function name as a static-initializer constant,
+   `extern` function definitions, a constant expression in a `case`,
+   plus two genuine bugs (pointer-to-const confused with a const
+   pointer; a crash on an integer `typedef` type).
+2. **`508e7b5`** -- the new public Java API (`$runtime()` +
+   `StandardRuntime`'s "Public Java API") described above, built
+   directly in response to the request to avoid reflection.
 
-`stb_image.h` n'a pas vocation à rejoindre la suite de tests permanente
-de cbc (bibliothèque tierce de 8000 lignes, sans rapport avec le
-compilateur) — ce dossier-ci n'est que la démo ; la nouvelle API Java,
-elle, est testée en permanence via `test/pubapi-runtime.c` +
-`test/PubapiRuntimeTest.java` dans le dépôt cbc.
+`stb_image.h` itself isn't meant to join cbc's permanent test suite (an
+8000-line third-party library unrelated to the compiler) -- this folder
+is just the demo; the new Java API, on the other hand, is tested
+permanently via `test/pubapi-runtime.c` + `test/PubapiRuntimeTest.java`
+in the cbc repo.

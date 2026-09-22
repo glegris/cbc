@@ -1,53 +1,51 @@
-# Décodage MP3 avec minimp3 via cbc (backend JVM) — 100 % Java, sans reflection
+# MP3 decoding with minimp3 via cbc (JVM backend) -- 100% Java, no reflection
 
-`minimp3.h` (la vraie bibliothèque C, quasi non modifiée) est compilée par
-`cbc -arch=jvm`, puis appelée directement en Java pur, sans sous-processus
-ni réflexion — exactement la même approche que `demos/stb_image`.
+`minimp3.h` (the real C library, barely modified) is compiled by
+`cbc -arch=jvm`, then called directly in pure Java, with no subprocess
+and no reflection -- exactly the same approach as `demos/stb_image`.
 
-## Comment ça marche
+## How it works
 
-`decode.c` expose trois petites fonctions au-dessus de l'API cœur de
-minimp3 (`mp3dec_init`/`mp3dec_decode_frame`) :
+`decode.c` exposes three small functions on top of minimp3's core API
+(`mp3dec_init`/`mp3dec_decode_frame`):
 
-- `long allocBuffer(int size)` — enrobe `malloc()`.
-- `void initDecoder(unsigned char *buf, int len)` — initialise le
-  décodeur sur un buffer déjà rempli par Java.
-- `int decodeNextFrame(void)` — avance d'une trame MP3 et renvoie le
-  nombre d'échantillons décodés (toutes voies confondues), ou 0 en fin
-  de fichier.
-- `frameBufferAddr()`/`frameChannels()`/`frameSampleRate()` — accès au
-  petit buffer PCM (réutilisé à chaque trame) et aux métadonnées.
+- `long allocBuffer(int size)` -- wraps `malloc()`.
+- `void initDecoder(unsigned char *buf, int len)` -- initializes the
+  decoder over a buffer Java has already filled.
+- `int decodeNextFrame(void)` -- advances one MP3 frame and returns the
+  number of decoded samples (all channels combined), or 0 at end of file.
+- `frameBufferAddr()`/`frameChannels()`/`frameSampleRate()` -- access to
+  the small PCM buffer (reused every frame) and its metadata.
 
-`PlayMp3.java` boucle sur `decode.decodeNextFrame()`, lit chaque trame
-via `decode.$runtime().readBytes(...)`, accumule le PCM dans un
-`ByteArrayOutputStream` Java, puis écrit un `.wav` (`AudioSystem.write`)
-et tente une lecture live (`Clip`) — repliée proprement sur "playback
-skipped" si l'environnement n'a pas de périphérique audio (ce qui est le
-cas de ce bac à sable).
+`PlayMp3.java` loops over `decode.decodeNextFrame()`, reads each frame
+via `decode.$runtime().readBytes(...)`, accumulates the PCM in a Java
+`ByteArrayOutputStream`, then writes a `.wav` (`AudioSystem.write`) and
+attempts live playback (`Clip`) -- falling back cleanly to "playback
+skipped" when the environment has no audio device (as is the case in
+this sandbox).
 
-**Pourquoi trame par trame plutôt que `mp3dec_load_buf` (l'API "tout en
-un" de minimp3_ex.h) ?** Cette API passe par un `mp3dec_io_t` de
-pointeurs de fonction lecture/seek (utile pour du vrai streaming
-fichier/réseau, inutile ici puisque le fichier est déjà en mémoire), et
-le backend JVM ne sait appeler indirectement qu'à travers une variable
-pointeur-de-fonction *simple*, pas un membre de structure (même
-limitation déjà documentée pour `demos/stb_image`). Décoder trame par
-trame évite aussi d'accumuler tout le PCM d'une chanson entière (des
-dizaines de Mo) dans le tas simulé de cbc, dimensionné pour des
-programmes C ordinaires — Java, avec son propre tas, s'en charge à sa
-place.
+**Why frame by frame rather than `mp3dec_load_buf` (minimp3_ex.h's
+"all-in-one" API)?** That API goes through an `mp3dec_io_t` of
+read/seek function pointers (useful for real file/network streaming,
+pointless here since the file is already in memory), and the JVM
+backend can only call indirectly through a *plain* function-pointer
+variable, not a struct member (the same limitation already documented
+for `demos/stb_image`). Decoding frame by frame also avoids
+accumulating an entire song's PCM (tens of MB) in cbc's own simulated
+heap, sized for ordinary C programs -- Java, with its own heap, takes
+care of that instead.
 
-## Fichiers
+## Files
 
-- `minimp3.h` — copie locale de la bibliothèque attachée, non modifiée
-  (seul le cœur `mp3dec_init`/`mp3dec_decode_frame` est utilisé ; pas de
-  patch nécessaire ici, contrairement à `stb_image.h`).
-- `decode.c` — les 5 fonctions ci-dessus + un `main()` vide.
-- `PlayMp3.java` — programme Java ordinaire, zéro réflexion, zéro
-  sous-processus.
-- `Padords.mp3` — le fichier attaché par l'utilisateur.
+- `minimp3.h` -- local copy of the attached library, unmodified (only
+  the core `mp3dec_init`/`mp3dec_decode_frame` is used; no patch needed
+  here, unlike `stb_image.h`).
+- `decode.c` -- the 5 functions above plus an empty `main()`.
+- `PlayMp3.java` -- an ordinary Java program, zero reflection, zero
+  subprocess.
+- `Padords.mp3` -- the file the user attached.
 
-## Pour rejouer
+## To replay
 
 ```sh
 cbc -arch=jvm -I <cbc>/import -o decode decode.c
@@ -55,88 +53,84 @@ javac -cp .:<cbc>/build/classes PlayMp3.java
 java -cp .:<cbc>/build/classes PlayMp3 Padords.mp3 out.wav
 ```
 
-## Ce que ça a nécessité côté compilateur
+## What this needed on the compiler side
 
-Cette démo a mis au jour et corrigé quatre lacunes/bugs réels de cbc en
-compilant minimp3.h et en décodant un vrai fichier :
+This demo surfaced and fixed four real cbc gaps/bugs while compiling
+minimp3.h and decoding an actual file:
 
-1. **Taille de tableau non littérale** (`float mdct_overlap[2][9*32]`) —
-   `arraySuffix()`/`typePostfix()` n'acceptaient qu'un `<INTEGER>` brut
-   entre crochets ; ils acceptent maintenant une vraie expression
-   constante entière (repliée à l'analyse via l'évaluateur déjà utilisé
-   par les désignateurs de tableau, `evalConstIndex`).
-2. **Suffixe `U` ignoré sur un littéral décimal** — `UINT64_MAX`
-   (`18446744073709551615ULL`) provoquait un crash du compilateur
-   (`NumberFormatException`) : `integerValue()` n'appliquait le repli
-   "non signé" (au-delà de `Long.MAX_VALUE`) qu'aux constantes
-   hexadécimales/octales, jamais aux décimales, même en présence d'un
-   `U` explicite — corrigé pour respecter la table C99 6.4.4.1p5 (un
-   suffixe `U` autorise toujours la pleine plage 64 bits non signée,
-   quelle que soit la base).
-3. **`float *= expr;` (et `+=`/`-=`/`/=`) rejeté** — `L3_ldexp_q2`'s
-   `y *= g_expfrac[...]…` échouait avec *"wrong operand type for \*:
-   float"* : `visit(OpAssignNode)` dans `TypeChecker` n'acceptait que
-   des opérandes entiers pour ces quatre opérateurs, alors qu'ils sont
-   valides sur les types flottants en C99 (seuls `%`, `&`, `|`, `^`,
-   `<<`, `>>` restent réservés aux entiers) — corrigé pour suivre le
-   même chemin "arithmétique" que l'opérateur binaire `+`/`-`/`*`/`/`
-   ordinaire.
-4. **Vrai bug : mauvaise décroissance pointeur d'un tableau
-   multi-dimensionnel** — `unsigned char *p = s.ist_pos[ch];` (où
-   `ist_pos` est `uint8_t[2][39]`) compilait sans erreur mais lisait de
-   la mémoire n'importe où (silencieusement, ou avec une exception
-   `IndexOutOfBoundsException` selon l'adresse obtenue) : `visit(MemberNode)`/
-   `visit(PtrMemberNode)`/`visit(DereferenceNode)` dans `IRGenerator`
-   décroissent correctement un résultat de type tableau vers sa seule
-   adresse (au lieu de le "charger" comme un scalaire), mais
-   `visit(ArefNode)` ne faisait jamais cette vérification — corrigé pour
-   suivre le même garde `isLoadable()` que les trois autres.
+1. **Non-literal array size** (`float mdct_overlap[2][9*32]`) --
+   `arraySuffix()`/`typePostfix()` only accepted a raw `<INTEGER>`
+   token between brackets; they now accept any compile-time integer
+   constant expression (folded at parse time by the same evaluator
+   designated-initializer indices already use, `evalConstIndex`).
+2. **`U` suffix ignored on a decimal literal** -- `UINT64_MAX`
+   (`18446744073709551615ULL`) crashed the compiler outright
+   (`NumberFormatException`): `integerValue()` only applied the
+   "fall back to unsigned" treatment (for values beyond
+   `Long.MAX_VALUE`) to hex/octal constants, never to decimal ones,
+   even with an explicit `U` suffix -- fixed to follow C99 6.4.4.1p5's
+   table (an explicit `U` suffix always permits the full unsigned
+   64-bit range, whatever the base).
+3. **`float *= expr;` (and `+=`/`-=`/`/=`) rejected** -- `L3_ldexp_q2`'s
+   `y *= g_expfrac[...]` failed with *"wrong operand type for \*:
+   float"*: `TypeChecker`'s `visit(OpAssignNode)` only accepted integer
+   operands for these four operators, even though they're valid on
+   float types in C99 (only `%`, `&`, `|`, `^`, `<<`, `>>` stay
+   integer-only) -- fixed to follow the same "arithmetic" path as the
+   ordinary binary `+`/`-`/`*`/`/` operator.
+4. **Real bug: wrong pointer decay for a multi-dimension array** --
+   `unsigned char *p = s.ist_pos[ch];` (where `ist_pos` is
+   `uint8_t[2][39]`) compiled without error but read memory at random
+   (silently, or with an `IndexOutOfBoundsException`, depending on the
+   address landed on): `IRGenerator`'s `visit(MemberNode)`/
+   `visit(PtrMemberNode)`/`visit(DereferenceNode)` correctly decay an
+   array-typed result to its own address (instead of "loading" it like
+   a scalar), but `visit(ArefNode)` never did that check -- fixed to
+   follow the same `isLoadable()` guard as the other three.
 
-Aucun patch n'a donc été nécessaire sur `minimp3.h` lui-même (contrairement
-à `stb_image.h`, dont le backend JVM ne peut pas appeler certains
-pointeurs de fonction membres de structure) : les quatre corrections
-ci-dessus étaient toutes de vraies lacunes/bugs du compilateur, pas des
-limitations d'architecture à contourner.
+No patch was needed on `minimp3.h` itself then (unlike `stb_image.h`,
+whose JVM backend can't call some struct-member function pointers): the
+four fixes above were all genuine compiler gaps/bugs, not architectural
+limitations to work around.
 
-Une dernière subtilité, côté démo cette fois (pas un bug cbc) :
-`PlayMp3.java` alloue le buffer d'entrée avec 32 octets de marge après
-la fin réelle du fichier (jamais inclus dans la longueur passée à
-`initDecoder()`). Le lecteur de bitstream de minimp3 (`L3_huffman`)
-préfetche jusqu'à 4 octets au-delà de sa position logique par
-construction — inoffensif sur une vraie machine, où la dernière trame
-MP3 est suivie par n'importe quoi d'autre partageant l'espace d'adressage
-du processus, mais une exception dure contre le tas simulé et borné de
-cbc en toute fin de fichier sans cette marge.
+One last subtlety, on the demo's side this time (not a cbc bug):
+`PlayMp3.java` allocates the input buffer with 32 bytes of slack past
+the real end of the file (never included in the length passed to
+`initDecoder()`). minimp3's bitstream reader (`L3_huffman`) prefetches
+up to 4 bytes past its logical position by construction -- harmless on
+real hardware, where the last MP3 frame is followed by whatever else
+shares the process's address space, but a hard exception against cbc's
+own bounded simulated heap at the very end of the file without that
+slack.
 
-## Vitesse de décodage : 56,8s → 1,36s
+## Decoding speed: 56.8s to 1.36s
 
-Décoder `Padords.mp3` (112s de musique) en entier a d'abord pris **56,8s**
-via le backend JVM — comparé à ~0,11-0,13s pour la même bibliothèque
-compilée en C natif (gcc -O2), soit un facteur ~425×. En creusant
-(profilage, lecture du bytecode réel via `javap -c`), la cause dominante
-n'était ni `ByteBuffer` (en fait plus rapide qu'un tableau `byte[]` géré
-à la main — HotSpot l'intrinséifie), ni le modèle mémoire simulée en
-lui-même, mais deux choses combinées :
+Decoding the whole of `Padords.mp3` (112s of music) first took **56.8s**
+via the JVM backend -- compared to ~0.11-0.13s for the same library
+compiled to native C (gcc -O2), a ~425x factor. Digging in (profiling,
+reading the actual bytecode via `javap -c`) showed the dominant cause
+was neither `ByteBuffer` (in fact faster than a hand-rolled `byte[]`
+array -- HotSpot intrinsifies it) nor the simulated memory model itself,
+but two things combined:
 
-1. **`mp3d_synth`** (le filtre de synthèse polyphasé de minimp3) générait
-   **8955 octets** de bytecode — juste au-dessus de la limite par défaut
-   de HotSpot pour compiler une méthode (`-XX:HugeMethodLimit=8000`) :
-   cette fonction tournait donc en permanence dans l'interpréteur.
-2. Chaque variable locale (même un simple compteur de boucle) vivait
-   dans le tas simulé de cbc, avec un recalcul d'adresse complet
-   (`frameBase` + offset + appel `ByteBuffer`) à chaque accès, sans
-   aucune réutilisation — exactement ce qui gonflait `mp3d_synth` au
-   point de dépasser cette limite.
+1. **`mp3d_synth`** (minimp3's polyphase synthesis filter) generated
+   **8955 bytes** of bytecode -- just over HotSpot's default method
+   compilation limit (`-XX:HugeMethodLimit=8000`): this function ran
+   permanently interpreted as a result.
+2. Every local variable (even a plain loop counter) lived in cbc's own
+   simulated heap, with a full address recomputation (`frameBase` +
+   offset + a `ByteBuffer` call) on every single access, with no reuse
+   at all -- exactly what bloated `mp3d_synth` past that limit in the
+   first place.
 
-Le compilateur promeut maintenant en vrais slots de variables locales
-JVM (`ILOAD`/`ISTORE`) toute variable locale/paramètre/temporaire dont
-l'adresse n'est jamais prise dans sa fonction (voir la nouvelle section
-correspondante du README principal et `EscapeAnalysis`). Résultat sur ce
-même fichier, sans rien changer d'autre : **1,36s** (meilleur sur 3
-passes, sans aucun flag JVM spécial) — un facteur **~42×**, avec un
-audio décodé strictement identique bit à bit (même somme SHA-256 du
-PCM) avant/après. `mp3d_synth` lui-même est redescendu à 4103 octets,
-repassant sous la limite de compilation JIT. Il reste un facteur ~10-12×
-par rapport au C natif, principalement inhérent à l'absence de SIMD sur
-ce backend et à l'écart normal entre bytecode JIT-compilé et code
-machine natif.
+The compiler now promotes any local variable/parameter/temporary whose
+address is never taken in its own function to a real JVM local variable
+slot (`ILOAD`/`ISTORE`; see the corresponding section in the main
+README and `EscapeAnalysis`). Result on this same file, with nothing
+else changed: **1.36s** (best of 3 runs, no special JVM flag needed) --
+a ~42x factor, with the decoded audio confirmed bit-for-bit identical
+(same PCM SHA-256) before and after. `mp3d_synth` itself dropped back to
+4103 bytes, back under the JIT compilation limit. It remains ~10-12x
+slower than native C, mostly inherent to this backend having no SIMD
+and to the normal gap between JIT-compiled bytecode and native machine
+code.

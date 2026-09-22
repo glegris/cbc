@@ -2757,7 +2757,7 @@ StmtNode n = null;
       switch ((jj_ntk==-1)?jj_ntk_f():jj_ntk) {
       case 58:{
         t = jj_consume_token(58);
-// A bare "；" -- C's own "empty statement", extremely
+// A bare ";" -- C's own "empty statement", extremely
             // common as a for/while/do-while loop's whole body (e.g.
             // "for (...) ;") or just a stray semicolon -- used to
             // leave "n" as null instead of returning an actual node,
