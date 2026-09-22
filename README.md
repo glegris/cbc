@@ -548,6 +548,36 @@ C-style address space:
     landed on) instead of ever raising a compile error; found decoding a
     real MP3 with minimp3.h (`demos/minimp3`), whose `mp3dec_scratch_t`
     struct has an `ist_pos[2][39]` member indexed by channel this way.
+  * **Local variables/parameters/compiler-synthesized temporaries whose
+    address is never taken are promoted to real JVM local variable
+    slots** (`ILOAD`/`ISTORE`/...) instead of living at a frame-relative
+    address in the simulated heap above -- see `EscapeAnalysis`. Every
+    other local used to pay the same cost as a genuine pointer
+    dereference on *every* access (`frameBase` reload, address
+    arithmetic, a `ByteBuffer` call) even for a plain loop counter that
+    C itself would keep in a register; a promoted one is a single, close
+    to free bytecode instruction the JIT can freely optimize, exactly
+    like `javac`'s own output. An entity is eligible whenever no `Addr`
+    IR node referencing it appears anywhere except as the direct
+    assignment target of a plain `x = ...;` (IRGenerator's own uniform
+    lowering for *every* such assignment, regardless of whether the
+    source ever wrote `&x`) -- struct/union and array entities are
+    always excluded (they need a real address for whole-value `memcpy`/
+    decay-to-pointer semantics). This is a pure optimization with no
+    behavior change (confirmed identical decoded PCM, bit for bit,
+    before and after, for `demos/minimp3`'s own real-MP3 decode) but a
+    very large one in practice: decoding a real ~112s MP3 through
+    `demos/minimp3` dropped from 56.8s to **1.36s** (a real C compiler,
+    for comparison, does the same decode in ~0.11-0.13s) -- most of that
+    gap was never the simulated heap's `ByteBuffer` access itself (a
+    JIT-intrinsified `ByteBuffer.getInt`/`putInt` on a `HeapByteBuffer`
+    is in fact *faster* than a hand-rolled byte-array reconstruction),
+    but the sheer bytecode bulk every local access added: a function
+    doing enough of them past HotSpot's default 8000-byte
+    `-XX:HugeMethodLimit` (`mp3d_synth`, minimp3's polyphase synthesis
+    filter, hit 8955 bytes) never gets JIT-compiled at all and runs
+    permanently interpreted -- promotion alone shrank it to 4103 bytes,
+    comfortably under that limit again, with no JVM flag required.
   * `main(void)` and `main(int argc, char **argv)`; `argc`/`argv` are
     derived from the JVM's own `String[] args` (with a synthetic
     `argv[0]` standing in for the program name).

@@ -1057,6 +1057,31 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
          *  copy -- see the class doc), not a spilled-to-memory copy of
          *  it, so its address is just this JVM local, loaded directly. */
         private final Map<Entity, Integer> indirectSlot = new HashMap<Entity, Integer>();
+        /** A scalar local/parameter/compiler-synthesized temporary whose
+         *  address is never observed anywhere in this function (see
+         *  EscapeAnalysis) lives directly in a genuine JVM local variable
+         *  slot -- ILOAD/ISTORE/... -- instead of at a frame-relative
+         *  address in the simulated heap: no GETSTATIC/computed-address/
+         *  INVOKEVIRTUAL sequence, and the JIT can freely register-
+         *  allocate it. A promoted parameter's own "slot" here is simply
+         *  its already-existing incoming JVM slot (paramJvmSlots), so it
+         *  needs no separate spill in emitPrologue at all; a promoted
+         *  local/temporary gets a freshly allocated one instead (see
+         *  promotedLocals below, used only to zero-initialize those --
+         *  never a parameter, which the calling convention already
+         *  initializes). pushAddressOf() is never called for an entity in
+         *  this map (that's the whole point: nothing ever needs its
+         *  address), and defensively errors out if it somehow is. */
+        private final Map<Entity, Integer> promotedSlot = new HashMap<Entity, Integer>();
+        /** Every promoted entity that is a local/temporary rather than a
+         *  parameter -- exactly the ones emitPrologue must zero-
+         *  initialize (a parameter's slot already holds the caller's
+         *  argument value; see promotedSlot above), so a "goto" jumping
+         *  over a local's own first assignment still finds a
+         *  well-defined value of the right JVM type in its slot rather
+         *  than risking a bytecode verifier error over a local that
+         *  looks unassigned on some path into later code that reads it. */
+        private final List<Entity> promotedLocals = new ArrayList<Entity>();
         private final Map<net.loveruby.cflat.asm.Label, org.objectweb.asm.Label> labels =
                 new HashMap<net.loveruby.cflat.asm.Label, org.objectweb.asm.Label>();
         private final List<Integer> paramJvmSlots = new ArrayList<Integer>();
@@ -1118,12 +1143,20 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                 varargSlot = -1;
             }
 
+            Set<Entity> escaping = EscapeAnalysis.escapingEntities(func.ir());
+
             long off = 0;
             List<CBCParameter> params = func.parameters();
             for (int i = 0; i < params.size(); i++) {
                 CBCParameter p = params.get(i);
                 if (isAggregate(p.type())) {
                     indirectSlot.put(p, paramJvmSlots.get(i));
+                }
+                else if (isPromotable(p.type(), p, escaping)) {
+                    // Already has a real JVM slot from the calling
+                    // convention -- no simulated-memory copy needed at
+                    // all (emitPrologue's spill loop skips it too).
+                    promotedSlot.put(p, paramJvmSlots.get(i));
                 }
                 else {
                     frameOffset.put(p, off);
@@ -1135,7 +1168,18 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             // allLocalVariables()) lets sibling block scopes -- whose
             // lifetimes never overlap -- share the same offsets, exactly
             // like the x86 backend's own locateLocalVariables().
-            frameSize = layoutScope(func.lvarScope(), off);
+            frameSize = layoutScope(func.lvarScope(), off, escaping);
+
+            // Promoted locals/temporaries get a freshly allocated JVM
+            // slot each -- unlike frame bytes, there is no need to share
+            // one across non-overlapping sibling scopes (JVM local slots
+            // are plentiful; see allocScratchLong()'s own doc comment for
+            // the same reasoning already applied to scratch slots).
+            for (Entity local : promotedLocals) {
+                net.loveruby.cflat.asm.Type t = asmWidthOf(local.type());
+                promotedSlot.put(local, jvmSlot);
+                jvmSlot += isWide(t) ? 2 : 1;
+            }
 
             frameBaseSlot = jvmSlot;
             jvmSlot += 2;
@@ -1154,18 +1198,40 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
         /** Recursively lays out one block scope's own variables starting
          *  at parentLen, then each child scope again from that same
          *  point (not chained across siblings), returning the largest
-         *  extent reached by any of them. */
-        private long layoutScope(LocalScope scope, long parentLen) {
+         *  extent reached by any of them. A promotable variable (see
+         *  isPromotable()) is instead collected into promotedLocals and
+         *  does not consume any frame space at all -- its own JVM slot
+         *  is allocated afterwards, once every fixed slot's own count is
+         *  known (see the constructor). */
+        private long layoutScope(LocalScope scope, long parentLen, Set<Entity> escaping) {
             long len = parentLen;
             for (DefinedVariable var : scope.localVariables()) {
-                frameOffset.put(var, len);
-                len += slotSize(var);
+                if (isPromotable(var.type(), var, escaping)) {
+                    promotedLocals.add(var);
+                }
+                else {
+                    frameOffset.put(var, len);
+                    len += slotSize(var);
+                }
             }
             long maxLen = len;
             for (LocalScope child : scope.children()) {
-                maxLen = Math.max(maxLen, layoutScope(child, len));
+                maxLen = Math.max(maxLen, layoutScope(child, len, escaping));
             }
             return maxLen;
+        }
+
+        /** Whether a scalar entity can safely live in a genuine JVM local
+         *  variable slot instead of the simulated heap -- see
+         *  promotedSlot's own doc comment and EscapeAnalysis. Struct/
+         *  union values need a real memory address for memcpy-style
+         *  whole-value copies (emitArraycopy), and an array always
+         *  decays to its own address whenever it's used at all -- both
+         *  excluded regardless of escaping, same as isAggregate() already
+         *  excludes struct/union from every other by-value path on this
+         *  backend. */
+        private boolean isPromotable(net.loveruby.cflat.type.Type t, Entity e, Set<Entity> escaping) {
+            return !t.isArray() && !isAggregate(t) && !escaping.contains(e);
         }
 
         /** For compiling a single top-level constant initializer expression
@@ -1218,6 +1284,18 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             mv.visitInsn(DUP2);
             mv.visitVarInsn(LSTORE, frameBaseSlot);
             putSp();
+            // Zero-initialize every promoted local/temporary's own JVM
+            // slot (never a parameter -- the calling convention already
+            // put its argument value there) so a "goto" jumping over its
+            // first real assignment still finds a well-defined value of
+            // the right JVM type, rather than risking a bytecode
+            // verifier error over a local the verifier can't prove is
+            // assigned on every path into later code that reads it.
+            for (Entity local : promotedLocals) {
+                net.loveruby.cflat.asm.Type t = asmWidthOf(local.type());
+                mv.visitInsn(zeroConstOpcode(t));
+                mv.visitVarInsn(storeOpcode(t), promotedSlot.get(local));
+            }
             // spill incoming JVM parameters into their memory frame slot
             List<CBCParameter> params = func.parameters();
             for (int i = 0; i < params.size(); i++) {
@@ -1227,6 +1305,35 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                     // caller-supplied address directly (see the class
                     // doc's hidden-pointer convention); there is no
                     // simulated-memory copy of its own to spill into.
+                    continue;
+                }
+                if (promotedSlot.containsKey(p)) {
+                    // A promoted scalar parameter's own "slot" already IS
+                    // its incoming JVM slot -- no simulated-memory copy to
+                    // spill into either -- but unlike coerceWidth (called
+                    // at every call site to widen/narrow between int and
+                    // long/float/double categories), nothing has yet
+                    // narrowed a sub-int argument (a byte/short-sized C
+                    // parameter) down to its true declared width, the way
+                    // emitStore's own I2B/I2S below always does for a
+                    // non-promoted parameter's spill; do that same
+                    // narrowing once, in place, so every later read of
+                    // this promoted slot sees the exact value a
+                    // non-promoted load from $mem would have. A no-op for
+                    // every wider type (INT32/INT64/FLOAT32/FLOAT64) --
+                    // skipped entirely for those, since narrowForStorage
+                    // would do nothing anyway and (unlike INT8/INT16)
+                    // they are not all one JVM slot wide, so there is no
+                    // single opcode pair that would even apply to all of
+                    // them uniformly.
+                    net.loveruby.cflat.asm.Type t = asmWidthOf(p.type());
+                    if (t == net.loveruby.cflat.asm.Type.INT8
+                            || t == net.loveruby.cflat.asm.Type.INT16) {
+                        int slot = promotedSlot.get(p);
+                        mv.visitVarInsn(ILOAD, slot);
+                        narrowForStorage(t, p.type().isSigned());
+                        mv.visitVarInsn(ISTORE, slot);
+                    }
                     continue;
                 }
                 pushBuf();
@@ -1448,6 +1555,17 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                 pushFunctionId((Function) e);
                 return;
             }
+            if (promotedSlot.containsKey(e)) {
+                // Should be unreachable: EscapeAnalysis promotes an
+                // entity only when no Addr node anywhere in this
+                // function ever needs its address (see promotedSlot's
+                // own doc comment) -- a defensive check, not a real
+                // recovery path.
+                error("internal error: address requested for a promoted "
+                        + "(register-allocated) local: " + e.name());
+                mv.visitInsn(LCONST_0);
+                return;
+            }
             Integer indirect = indirectSlot.get(e);
             if (indirect != null) {
                 mv.visitVarInsn(LLOAD, indirect);
@@ -1568,6 +1686,33 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             }
         }
 
+        /** Reduces a full-width int on the stack to exactly the value a
+         *  round trip through emitStore(t) then emitLoad(t, signed)
+         *  would have produced -- truncated to t's true width, then
+         *  sign- or zero-extended back to a full int/long per signedness
+         *  -- in a single step, entirely on the JVM stack. A promoted
+         *  local/parameter (see promotedSlot) has no $mem storage to
+         *  round-trip through at all, so this is applied once, right
+         *  before every store into its own JVM slot, to keep it holding
+         *  the exact same canonical value a non-promoted access of the
+         *  same variable would always recompute on every load. A no-op
+         *  for INT32/INT64/FLOAT32/FLOAT64, which already need no
+         *  narrowing either way. */
+        private void narrowForStorage(net.loveruby.cflat.asm.Type t, boolean signed) {
+            switch (t) {
+            case INT8:
+                mv.visitInsn(I2B);
+                if (!signed) { mv.visitLdcInsn(0xFF); mv.visitInsn(IAND); }
+                break;
+            case INT16:
+                mv.visitInsn(I2S);
+                if (!signed) { mv.visitLdcInsn(0xFFFF); mv.visitInsn(IAND); }
+                break;
+            default:
+                break;
+            }
+        }
+
         //
         // Statements
         //
@@ -1637,6 +1782,25 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                 mv.visitVarInsn(LSTORE, copySrcScratch);
                 emitArraycopy(src.type().size());
                 return null;
+            }
+            if (node.lhs() instanceof Addr) {
+                Entity maybePromoted = ((Addr) node.lhs()).entity();
+                Integer slot = promotedSlot.get(maybePromoted);
+                if (slot != null) {
+                    // A plain "x = ...;" where x never has its address
+                    // taken anywhere in this function (see EscapeAnalysis):
+                    // store straight into its own JVM local slot, no
+                    // address, no $mem access at all. narrowForStorage
+                    // keeps the same truncate-then-extend semantics a
+                    // non-promoted store into $mem (followed by any later
+                    // load back out of it) would have applied.
+                    net.loveruby.cflat.asm.Type t = asmWidthOf(maybePromoted.type());
+                    compile(node.rhs());
+                    coerceWidth(resultWidth(node.rhs()), t);
+                    narrowForStorage(t, maybePromoted.type().isSigned());
+                    mv.visitVarInsn(storeOpcode(t), slot);
+                    return null;
+                }
             }
             pushBuf();
             net.loveruby.cflat.asm.Type storeWidth;
@@ -2441,6 +2605,15 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
                         + "backend (as a plain expression outside a supported by-value "
                         + "position); use a pointer instead: " + e.name());
                 mv.visitInsn(LCONST_0);
+                return null;
+            }
+            Integer slot = promotedSlot.get(e);
+            if (slot != null) {
+                // Already the canonical, fully sign-/zero-extended value
+                // for e's own width (see narrowForStorage's own doc
+                // comment: every store into this slot already applied
+                // it) -- a single JVM load, no address, no $mem access.
+                mv.visitVarInsn(loadOpcode(asmWidthOf(e.type())), slot);
                 return null;
             }
             pushBuf();

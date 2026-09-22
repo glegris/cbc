@@ -107,3 +107,36 @@ construction — inoffensif sur une vraie machine, où la dernière trame
 MP3 est suivie par n'importe quoi d'autre partageant l'espace d'adressage
 du processus, mais une exception dure contre le tas simulé et borné de
 cbc en toute fin de fichier sans cette marge.
+
+## Vitesse de décodage : 56,8s → 1,36s
+
+Décoder `Padords.mp3` (112s de musique) en entier a d'abord pris **56,8s**
+via le backend JVM — comparé à ~0,11-0,13s pour la même bibliothèque
+compilée en C natif (gcc -O2), soit un facteur ~425×. En creusant
+(profilage, lecture du bytecode réel via `javap -c`), la cause dominante
+n'était ni `ByteBuffer` (en fait plus rapide qu'un tableau `byte[]` géré
+à la main — HotSpot l'intrinséifie), ni le modèle mémoire simulée en
+lui-même, mais deux choses combinées :
+
+1. **`mp3d_synth`** (le filtre de synthèse polyphasé de minimp3) générait
+   **8955 octets** de bytecode — juste au-dessus de la limite par défaut
+   de HotSpot pour compiler une méthode (`-XX:HugeMethodLimit=8000`) :
+   cette fonction tournait donc en permanence dans l'interpréteur.
+2. Chaque variable locale (même un simple compteur de boucle) vivait
+   dans le tas simulé de cbc, avec un recalcul d'adresse complet
+   (`frameBase` + offset + appel `ByteBuffer`) à chaque accès, sans
+   aucune réutilisation — exactement ce qui gonflait `mp3d_synth` au
+   point de dépasser cette limite.
+
+Le compilateur promeut maintenant en vrais slots de variables locales
+JVM (`ILOAD`/`ISTORE`) toute variable locale/paramètre/temporaire dont
+l'adresse n'est jamais prise dans sa fonction (voir la nouvelle section
+correspondante du README principal et `EscapeAnalysis`). Résultat sur ce
+même fichier, sans rien changer d'autre : **1,36s** (meilleur sur 3
+passes, sans aucun flag JVM spécial) — un facteur **~42×**, avec un
+audio décodé strictement identique bit à bit (même somme SHA-256 du
+PCM) avant/après. `mp3d_synth` lui-même est redescendu à 4103 octets,
+repassant sous la limite de compilation JIT. Il reste un facteur ~10-12×
+par rapport au C natif, principalement inhérent à l'absence de SIMD sur
+ce backend et à l'écart normal entre bytecode JIT-compilé et code
+machine natif.
