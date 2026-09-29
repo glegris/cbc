@@ -728,6 +728,44 @@ public class StandardRuntime {
     public int signbit(double x) { return (Math.copySign(1.0, x) < 0) ? 1 : 0; }
 
     //
+    // <time.h> -- only the two functions that genuinely need a real
+    // clock; everything else (calendar math, formatting) is plain
+    // portable C written directly in time.h itself, identical on both
+    // backends. time_t is declared "long" there (4 bytes on the x86
+    // backend, matching glibc-i386's own 32-bit time_t exactly, same
+    // Y2038 ceiling and all; 8 bytes on this backend, avoiding it) --
+    // whichever width that ends up being on a given backend is also
+    // exactly what "long tp"/the "long" return below marshal, with no
+    // extra care needed here.
+    //
+
+    /** Seconds since the Unix epoch (real wall-clock time, not a
+     *  simulated one), also stored at *tp if tp isn't NULL (address 0),
+     *  matching time()'s own C99 signature/behavior. */
+    public long time(long tp) {
+        long t = System.currentTimeMillis() / 1000L;
+        if (tp != 0) {
+            buf.putLong(at(tp), t);
+        }
+        return t;
+    }
+
+    // Real clock() reports CPU time consumed by the process; the JVM has
+    // no simple, portable way to ask for that (java.lang.management's
+    // ThreadMXBean is JVM-implementation-optional and per-thread, not
+    // per-process). Wall-clock microseconds elapsed since this class was
+    // first loaded is used instead -- CLOCKS_PER_SEC's own value in
+    // time.h already matches this 1-microsecond unit -- which is what
+    // most real callers actually use clock() FOR anyway (a coarse
+    // elapsed-time measurement, e.g. "how long did this take"), even
+    // though it isn't strictly CPU time under real contention.
+    private static final long CLOCK_START_NANOS = System.nanoTime();
+
+    public long clock() {
+        return (System.nanoTime() - CLOCK_START_NANOS) / 1000L;
+    }
+
+    //
     // Public Java API: for plain Java code (not compiled cflat) sharing
     // this same JVM process with a compiled program, to inspect or
     // modify its simulated memory directly instead of reaching for

@@ -176,7 +176,9 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             "floor", "floorf", "ceil", "ceilf", "round", "roundf",
             "trunc", "truncf", "fmod", "fmodf", "hypot", "hypotf",
             "ldexp", "ldexpf", "copysign", "copysignf",
-            "isnan", "isinf", "isfinite", "signbit"
+            "isnan", "isinf", "isfinite", "signbit",
+            // <time.h>
+            "time", "clock"
     ));
 
     private final ErrorHandler errorHandler;

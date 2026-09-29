@@ -433,9 +433,10 @@ What ships in `import/`, organized like the standard itself:
 
   * **C99**: `<stdio.h>`, `<stdlib.h>`, `<string.h>`, `<stdarg.h>`,
     `<stddef.h>`, `<stdbool.h>`, `<ctype.h>`, `<assert.h>`, `<limits.h>`,
-    `<float.h>`, `<math.h>`, `<stdint.h>` (the fixed-width `intN_t`/`uintN_t` types
-    and their `INTN_MIN`/`INTN_MAX`/`UINTN_MAX` macros, plus
-    `intptr_t`/`uintptr_t`, not every optional "least"/"fast" variant).
+    `<float.h>`, `<math.h>`, `<time.h>`, `<stdint.h>` (the fixed-width
+    `intN_t`/`uintN_t` types and their `INTN_MIN`/`INTN_MAX`/`UINTN_MAX`
+    macros, plus `intptr_t`/`uintptr_t`, not every optional "least"/
+    "fast" variant), `<inttypes.h>`.
     `<ctype.h>`, `<assert.h>`, `<limits.h>`, `<float.h>` and `<stdint.h>`
     are new: `<ctype.h>` in particular declares functions
     (`isdigit`/`isalpha`/...) that were already implemented in
@@ -467,7 +468,23 @@ What ships in `import/`, organized like the standard itself:
     *type-generic macros* in the standard itself, implemented here as
     plain `double`-taking functions instead (no type-generic macro
     mechanism exists in this compiler), same treatment several minimal
-    libc implementations give them.
+    libc implementations give them. `<time.h>` is new as well: `time()`/
+    `clock()` are the only two that need a real clock (implemented in
+    `StandardRuntime.java`/the real libc, same split as `<math.h>`
+    above); calendar conversion (`gmtime`/`mktime`/...), formatting
+    (`asctime`/`strftime`) and `difftime()` are plain portable C written
+    directly in the header itself, identical on both backends, using
+    Howard Hinnant's public-domain civil-calendar<->days-since-epoch
+    algorithms for exact proleptic-Gregorian conversion in any year. No
+    timezone/locale database exists in this compiler at all (see below),
+    so `localtime()` behaves exactly like `gmtime()` -- this always
+    reports UTC, never a real local timezone. `<inttypes.h>` is new too,
+    extending `<stdint.h>` with `intmax_t`/`uintmax_t`, `imaxabs()`/
+    `imaxdiv()`, `strtoimax()`/`strtoumax()`, and the `PRI`-prefixed
+    printf format macros (`PRId32`, `PRIu64`, ...) for each fixed-width
+    type -- no `SCN`-prefixed scanf ones, since this compiler has no
+    `scanf()` family at all yet, and no `wcstoimax()`/`wcstoumax()`,
+    which take a wide-character string this compiler has no support for.
   * **Not C99, kept for compatibility with real code**: `<strings.h>`,
     `<errno.h>`, `<setjmp.h>`, `<unistd.h>`, `<sys/types.h>`,
     `<alloca.h>`, `<dlfcn.h>` -- all x86-only (real libc symbols this
@@ -476,7 +493,7 @@ What ships in `import/`, organized like the standard itself:
     without hand-writing them there first -- see the JVM backend section
     below).
 
-Still not provided: `<inttypes.h>`, `<time.h>`, `<signal.h>`,
+Still not provided: `<signal.h>`,
 `<locale.h>`, `<wchar.h>`/`<wctype.h>`, `<complex.h>`/`<tgmath.h>` -- none
 of these need the preprocessor or parser to change to add, just more
 declarations (and, for anything not already in `StandardRuntime.java`,

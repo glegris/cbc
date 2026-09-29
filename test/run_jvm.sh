@@ -540,6 +540,17 @@ run_java_api_case pubapi-runtime "111;222;initial;REPLACED;true;true;true" Pubap
 # every category it declares ---
 run_case math-funcs "1.4142;1.4142;1024.0000;3.5000;3.0000;4.0000;3.0000;-3.0000;-3.0000;1.0000;5.0000;2.7183;1.0000;3.0000;3.0000;0.0000;1.0000;3.1416;1;0;1;0;1;0;1;0;"
 
+# --- <time.h>, newly added (see StandardRuntime's own "<time.h>"
+# section and the header's own doc comment): mktime()<->gmtime() round
+# trip (weekday/yday computed, not just echoed back), asctime(),
+# strftime(), difftime(), and a live time()/clock() sanity check ---
+run_case time-funcs "1710505845;5;74;2024;2024-03-15 12:30:45;Fri Mar 15 12:30:45 2024;2024-03-15 12:30:45 Fri Mar;900.0;1;1;"
+
+# --- <inttypes.h>, newly added on top of <stdint.h>: imaxabs/imaxdiv,
+# strtoimax/strtoumax, and a representative slice of the PRI* printf
+# format macros (see the header's own doc comment) ---
+run_case inttypes-funcs "42;3;2;-123;456;100;200;ff;-5;6000;"
+
 echo
 echo "pass=$pass known-diff=$known fail=$fail"
 rm -rf "$SCRATCH"
