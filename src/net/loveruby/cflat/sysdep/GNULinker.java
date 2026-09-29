@@ -41,6 +41,7 @@ class GNULinker implements Linker {
         cmd.addAll(args);
         if (! opts.noDefaultLibs) {
             cmd.add("-lc");
+            cmd.add("-lm");
             cmd.add("-lcbc");
         }
         if (! opts.noStartFiles) {
@@ -64,6 +65,7 @@ class GNULinker implements Linker {
         cmd.addAll(args);
         if (! opts.noDefaultLibs) {
             cmd.add("-lc");
+            cmd.add("-lm");
             cmd.add("-lcbc");
         }
         if (! opts.noStartFiles) {

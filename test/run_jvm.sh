@@ -535,6 +535,11 @@ run_case minimp3-gaps "42;1;7.0;11;12;21;22;"
 # pubapi-runtime.c/PubapiRuntimeTest.java for what this covers ---
 run_java_api_case pubapi-runtime "111;222;initial;REPLACED;true;true;true" PubapiRuntimeTest.java
 
+# --- <math.h>, newly added (see StandardRuntime's own "<math.h>"
+# section and the header's own doc comment): a representative slice of
+# every category it declares ---
+run_case math-funcs "1.4142;1.4142;1024.0000;3.5000;3.0000;4.0000;3.0000;-3.0000;-3.0000;1.0000;5.0000;2.7183;1.0000;3.0000;3.0000;0.0000;1.0000;3.1416;1;0;1;0;1;0;1;0;"
+
 echo
 echo "pass=$pass known-diff=$known fail=$fail"
 rm -rf "$SCRATCH"

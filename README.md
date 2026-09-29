@@ -433,7 +433,7 @@ What ships in `import/`, organized like the standard itself:
 
   * **C99**: `<stdio.h>`, `<stdlib.h>`, `<string.h>`, `<stdarg.h>`,
     `<stddef.h>`, `<stdbool.h>`, `<ctype.h>`, `<assert.h>`, `<limits.h>`,
-    `<float.h>`, `<stdint.h>` (the fixed-width `intN_t`/`uintN_t` types
+    `<float.h>`, `<math.h>`, `<stdint.h>` (the fixed-width `intN_t`/`uintN_t` types
     and their `INTN_MIN`/`INTN_MAX`/`UINTN_MAX` macros, plus
     `intptr_t`/`uintptr_t`, not every optional "least"/"fast" variant).
     `<ctype.h>`, `<assert.h>`, `<limits.h>`, `<float.h>` and `<stdint.h>`
@@ -455,7 +455,19 @@ What ships in `import/`, organized like the standard itself:
     *compiler* resolves against long's real width on whichever backend
     it's actually targeting, rather than a `#if`-time literal that would
     be silently wrong on one of the two -- see `limits.h`'s own comment
-    for the (small) resulting caveat.
+    for the (small) resulting caveat. `<math.h>` is new too: every
+    `double` function has a matching `f`-suffixed `float` one (this
+    compiler has no function overloading, so real C99's float/double
+    pair for e.g. `sqrt`/`sqrtf` is just two differently-named
+    functions here, same as everywhere else); `HUGE_VAL`/`INFINITY`/
+    `NAN` are plain `(1.0/0.0)`/`(1.0/0.0)`/`(0.0/0.0)` constant
+    expressions rather than functions, since real IEEE 754 division
+    already evaluates those to +Inf/+Inf/NaN identically on both
+    backends; `isnan`/`isinf`/`isfinite`/`signbit` are real C99
+    *type-generic macros* in the standard itself, implemented here as
+    plain `double`-taking functions instead (no type-generic macro
+    mechanism exists in this compiler), same treatment several minimal
+    libc implementations give them.
   * **Not C99, kept for compatibility with real code**: `<strings.h>`,
     `<errno.h>`, `<setjmp.h>`, `<unistd.h>`, `<sys/types.h>`,
     `<alloca.h>`, `<dlfcn.h>` -- all x86-only (real libc symbols this

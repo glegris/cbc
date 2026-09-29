@@ -166,7 +166,17 @@ public class CodeGenerator implements net.loveruby.cflat.sysdep.CodeGenerator {
             // calls of the same underlying operation.
             "mir_sysio_open", "mir_sysio_close", "mir_sysio_read",
             "mir_sysio_write", "mir_sysio_seek", "mir_sysio_tell",
-            "mir_sysio_feof"
+            "mir_sysio_feof",
+            // <math.h>
+            "fabs", "fabsf", "sqrt", "sqrtf", "cbrt", "cbrtf", "pow", "powf",
+            "exp", "expf", "exp2", "exp2f", "log", "logf", "log2", "log2f",
+            "log10", "log10f", "sin", "sinf", "cos", "cosf", "tan", "tanf",
+            "asin", "asinf", "acos", "acosf", "atan", "atanf", "atan2", "atan2f",
+            "sinh", "sinhf", "cosh", "coshf", "tanh", "tanhf",
+            "floor", "floorf", "ceil", "ceilf", "round", "roundf",
+            "trunc", "truncf", "fmod", "fmodf", "hypot", "hypotf",
+            "ldexp", "ldexpf", "copysign", "copysignf",
+            "isnan", "isinf", "isfinite", "signbit"
     ));
 
     private final ErrorHandler errorHandler;

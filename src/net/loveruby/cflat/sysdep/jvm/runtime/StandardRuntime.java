@@ -616,6 +616,118 @@ public class StandardRuntime {
     }
 
     //
+    // <math.h> -- pure functions, "mem" unused. Each double-taking one
+    // has a matching "f"-suffixed float overload (real C99 math.h has
+    // both; this compiler has no function overloading, so they're
+    // simply two differently-named methods, exactly like the header
+    // itself declares them). isnan()/isinf()/isfinite() are real C99
+    // *macros* (type-generic over float/double/long double) rather than
+    // functions -- this compiler has no type-generic macro mechanism,
+    // so they're implemented here as plain double-taking functions
+    // instead (a float argument promotes to double at the call, same as
+    // any other function call), matching what several minimal libc
+    // implementations do for the same reason. HUGE_VAL/NAN/INFINITY
+    // need no function here at all -- math.h defines them directly as
+    // "(1.0/0.0)"/"(0.0/0.0)"/"(1.0/0.0)", which both backends' real
+    // IEEE 754 double division already evaluates to +Inf/NaN/+Inf at
+    // runtime with no special-casing.
+    //
+
+    public double fabs(double x) { return Math.abs(x); }
+    public float fabsf(float x) { return Math.abs(x); }
+
+    public double sqrt(double x) { return Math.sqrt(x); }
+    public float sqrtf(float x) { return (float) Math.sqrt(x); }
+
+    public double cbrt(double x) { return Math.cbrt(x); }
+    public float cbrtf(float x) { return (float) Math.cbrt(x); }
+
+    public double pow(double x, double y) { return Math.pow(x, y); }
+    public float powf(float x, float y) { return (float) Math.pow(x, y); }
+
+    public double exp(double x) { return Math.exp(x); }
+    public float expf(float x) { return (float) Math.exp(x); }
+
+    public double exp2(double x) { return Math.pow(2, x); }
+    public float exp2f(float x) { return (float) Math.pow(2, x); }
+
+    public double log(double x) { return Math.log(x); }
+    public float logf(float x) { return (float) Math.log(x); }
+
+    public double log2(double x) { return Math.log(x) / Math.log(2); }
+    public float log2f(float x) { return (float) (Math.log(x) / Math.log(2)); }
+
+    public double log10(double x) { return Math.log10(x); }
+    public float log10f(float x) { return (float) Math.log10(x); }
+
+    public double sin(double x) { return Math.sin(x); }
+    public float sinf(float x) { return (float) Math.sin(x); }
+
+    public double cos(double x) { return Math.cos(x); }
+    public float cosf(float x) { return (float) Math.cos(x); }
+
+    public double tan(double x) { return Math.tan(x); }
+    public float tanf(float x) { return (float) Math.tan(x); }
+
+    public double asin(double x) { return Math.asin(x); }
+    public float asinf(float x) { return (float) Math.asin(x); }
+
+    public double acos(double x) { return Math.acos(x); }
+    public float acosf(float x) { return (float) Math.acos(x); }
+
+    public double atan(double x) { return Math.atan(x); }
+    public float atanf(float x) { return (float) Math.atan(x); }
+
+    public double atan2(double y, double x) { return Math.atan2(y, x); }
+    public float atan2f(float y, float x) { return (float) Math.atan2(y, x); }
+
+    public double sinh(double x) { return Math.sinh(x); }
+    public float sinhf(float x) { return (float) Math.sinh(x); }
+
+    public double cosh(double x) { return Math.cosh(x); }
+    public float coshf(float x) { return (float) Math.cosh(x); }
+
+    public double tanh(double x) { return Math.tanh(x); }
+    public float tanhf(float x) { return (float) Math.tanh(x); }
+
+    public double floor(double x) { return Math.floor(x); }
+    public float floorf(float x) { return (float) Math.floor(x); }
+
+    public double ceil(double x) { return Math.ceil(x); }
+    public float ceilf(float x) { return (float) Math.ceil(x); }
+
+    // C99's round() rounds half away from zero, not toward +Infinity --
+    // "x + 0.5, then floor" is wrong for negative x (round(-0.5) must be
+    // -1.0, not 0.0), so the two signs need their own rounding direction.
+    public double round(double x) { return (x >= 0) ? Math.floor(x + 0.5) : Math.ceil(x - 0.5); }
+    public float roundf(float x) { return (float) round(x); }
+
+    // Truncate toward zero, without narrowing through "long" first (that
+    // would overflow/misbehave for any |x| beyond Long.MAX_VALUE).
+    public double trunc(double x) { return (x >= 0) ? Math.floor(x) : Math.ceil(x); }
+    public float truncf(float x) { return (float) trunc(x); }
+
+    // Java's "%" on double/float already implements C's fmod() truncated-
+    // division remainder exactly (unlike Math.IEEEremainder(), which is a
+    // different, round-to-nearest rule) -- no wrapper logic needed.
+    public double fmod(double x, double y) { return x % y; }
+    public float fmodf(float x, float y) { return x % y; }
+
+    public double hypot(double x, double y) { return Math.hypot(x, y); }
+    public float hypotf(float x, float y) { return (float) Math.hypot(x, y); }
+
+    public double ldexp(double x, int exp) { return x * Math.pow(2, exp); }
+    public float ldexpf(float x, int exp) { return (float) (x * Math.pow(2, exp)); }
+
+    public double copysign(double x, double y) { return Math.copySign(x, y); }
+    public float copysignf(float x, float y) { return Math.copySign(x, y); }
+
+    public int isnan(double x) { return Double.isNaN(x) ? 1 : 0; }
+    public int isinf(double x) { return Double.isInfinite(x) ? 1 : 0; }
+    public int isfinite(double x) { return Double.isFinite(x) ? 1 : 0; }
+    public int signbit(double x) { return (Math.copySign(1.0, x) < 0) ? 1 : 0; }
+
+    //
     // Public Java API: for plain Java code (not compiled cflat) sharing
     // this same JVM process with a compiled program, to inspect or
     // modify its simulated memory directly instead of reaching for
